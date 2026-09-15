@@ -1,0 +1,14 @@
+name: SantaEngine
+options:
+  bundleIdPrefix: com.muntazirfx
+targets:
+  SantaEngine:
+    type: application
+    platform: iOS
+    deploymentTarget: "14.0"
+    sources: 
+      - ios
+    settings:
+      INFOPLIST_FILE: ios/Info.plist
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGNING_REQUIRED: NO
