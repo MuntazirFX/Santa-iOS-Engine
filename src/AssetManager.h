@@ -7,7 +7,7 @@
 
 struct XPKEntry {
     std::string filename;
-    uint32_t rawOffset; // Header se asal offset
+    uint32_t offset; // XPK file mein asal absolute offset
     uint32_t size;
 };
 
