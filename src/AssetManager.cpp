@@ -14,42 +14,60 @@ bool AssetManager::loadXPK(const std::string& filepath) {
         return false;
     }
 
-    // NOTE: Yeh ek basic structure hai. Agar XPK format mukhtalif hai, 
-    // toh in lines ko hex editor ke mutabiq adjust karna hoga.
-    char magic[4];
-    xpkFile.read(magic, 4);
-
+    // Header parhein
     uint32_t fileCount = 0;
     xpkFile.read(reinterpret_cast<char*>(&fileCount), sizeof(fileCount));
 
-    std::cout << "XPK Magic: " << magic << " | File Count: " << fileCount << std::endl;
+    std::vector<uint32_t> offsets(fileCount);
+    xpkFile.read(reinterpret_cast<char*>(offsets.data()), fileCount * sizeof(uint32_t));
 
+    uint32_t headerSize = 4 + (fileCount * 4);
+    uint32_t metadataEnd = headerSize;
+
+    // Pehle saari metadata (size + filename) parhein
     for (uint32_t i = 0; i < fileCount; ++i) {
-        XPKEntry entry;
+        xpkFile.seekg(headerSize + offsets[i], std::ios::beg);
+        
+        uint32_t fileSize = 0;
+        xpkFile.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
+
+        std::string filename;
         char ch;
-        // Read filename (assuming null-terminated string)
         while (xpkFile.get(ch) && ch != '\0') {
-            entry.filename += ch;
+            filename += ch;
         }
 
-        xpkFile.read(reinterpret_cast<char*>(&entry.offset), sizeof(entry.offset));
-        xpkFile.read(reinterpret_cast<char*>(&entry.size), sizeof(entry.size));
+        XPKEntry entry;
+        entry.filename = filename;
+        entry.size = fileSize;
 
-        fileTable.push_back(entry);
-        std::cout << "Found: " << entry.filename << " | Offset: " << entry.offset << " | Size: " << entry.size << std::endl;
+        fileTable[filename] = entry;
+
+        // Data section kahan se shuru hota hai (sabse aakhri metadata ke baad)
+        uint32_t currentMetadataEnd = headerSize + offsets[i] + 4 + filename.length() + 1;
+        if (currentMetadataEnd > metadataEnd) {
+            metadataEnd = currentMetadataEnd;
+        }
     }
 
+    // Ab har file ka absolute data offset calculate karein
+    uint32_t dataOffset = metadataEnd;
+    for (auto& pair : fileTable) {
+        pair.second.offset = dataOffset;
+        dataOffset += pair.second.size; // Agli file ka data iske foran baad shuru hota hai
+    }
+
+    std::cout << "XPK loaded successfully! Total " << fileTable.size() << " files ready in memory." << std::endl;
     return true;
 }
 
 std::vector<uint8_t> AssetManager::getAssetData(const std::string& filename) {
-    for (const auto& entry : fileTable) {
-        if (entry.filename == filename) {
-            std::vector<uint8_t> data(entry.size);
-            xpkFile.seekg(entry.offset, std::ios::beg);
-            xpkFile.read(reinterpret_cast<char*>(data.data()), entry.size);
-            return data;
-        }
+    auto it = fileTable.find(filename);
+    if (it != fileTable.end()) {
+        std::vector<uint8_t> data(it->second.size);
+        xpkFile.seekg(it->second.offset, std::ios::beg);
+        xpkFile.read(reinterpret_cast<char*>(data.data()), it->second.size);
+        return data;
     }
     std::cerr << "Asset not found: " << filename << std::endl;
     return {};
