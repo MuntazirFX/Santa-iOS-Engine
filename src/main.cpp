@@ -2,9 +2,18 @@
 #include <fstream>
 #include <vector>
 #include <cstdint>
+#include <iomanip>
+
+void printHexDump(const std::vector<uint8_t>& data, size_t count) {
+    for (size_t i = 0; i < data.size() && i < count; ++i) {
+        std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)data[i] << " ";
+        if ((i + 1) % 16 == 0) std::cout << std::endl;
+    }
+    std::cout << std::dec << std::endl;
+}
 
 int main() {
-    std::cout << "Santa iOS Engine - TGA to PPM Converter" << std::endl;
+    std::cout << "Santa iOS Engine - TGA Pixel Data Check" << std::endl;
 
     std::ifstream file("assets/xmas.xpk", std::ios::binary);
     if (!file.is_open()) {
@@ -12,51 +21,39 @@ int main() {
         return 1;
     }
 
-    // Pehli TGA ka offset
     uint32_t tgaOffset = 5642606;
     
     file.seekg(tgaOffset, std::ios::beg);
-    
-    // TGA Header parhein (18 bytes)
     unsigned char header[18];
     file.read(reinterpret_cast<char*>(header), 18);
 
     uint8_t idLength = header[0];
-    uint8_t imageType = header[2];
     uint16_t width = header[12] | (header[13] << 8);
     uint16_t height = header[14] | (header[15] << 8);
     uint8_t bitsPerPixel = header[16];
-    uint8_t imageDescriptor = header[17];
 
-    std::cout << "TGA Info: " << width << "x" << height << " | BPP: " << (int)bitsPerPixel << " | Type: " << (int)imageType << std::endl;
+    std::cout << "TGA Info: " << width << "x" << height << " | BPP: " << (int)bitsPerPixel << std::endl;
 
-    // Pixel data ka start (ID length ke baad)
     uint32_t pixelDataStart = tgaOffset + 18 + idLength;
     file.seekg(pixelDataStart, std::ios::beg);
 
-    // Pixels parhein
     int bytesPerPixel = bitsPerPixel / 8;
     int imageSize = width * height * bytesPerPixel;
-    std::vector<uint8_t> pixels(imageSize);
-    file.read(reinterpret_cast<char*>(pixels.data()), imageSize);
+    
+    // Sirf pehle 64 bytes parhein taake pata chale data kaisa hai
+    std::vector<uint8_t> pixelSample(64);
+    file.read(reinterpret_cast<char*>(pixelSample.data()), 64);
     file.close();
 
-    // Ab PPM file banayein (P6 format mein)
-    std::ofstream ppmFile("test_output.ppm", std::ios::binary);
-    ppmFile << "P6\n" << width << " " << height << "\n255\n";
+    std::cout << "Pixel Data (First 64 bytes):" << std::endl;
+    printHexDump(pixelSample, 64);
 
-    // TGA BGR format mein hota hai, PPM RGB chahta hai
-    for (int i = 0; i < width * height; ++i) {
-        uint8_t b = pixels[i * bytesPerPixel];
-        uint8_t g = pixels[i * bytesPerPixel + 1];
-        uint8_t r = pixels[i * bytesPerPixel + 2];
-        
-        ppmFile.write(reinterpret_cast<char*>(&r), 1);
-        ppmFile.write(reinterpret_cast<char*>(&g), 1);
-        ppmFile.write(reinterpret_cast<char*>(&b), 1);
+    // Check karein ke kya saara data zero hai
+    bool allZero = true;
+    for (uint8_t b : pixelSample) {
+        if (b != 0) { allZero = false; break; }
     }
-    ppmFile.close();
+    std::cout << "All zeros? " << (allZero ? "YES" : "NO") << std::endl;
 
-    std::cout << "test_output.ppm successfully ban gayi!" << std::endl;
     return 0;
 }
