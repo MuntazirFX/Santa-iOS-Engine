@@ -16,7 +16,12 @@ jobs:
     - name: Compile C++ Code
       run: |
         echo "Build process shuru ho raha hai..."
-        # Yahan -std=c++17 add karna zaroori hai
         clang++ -std=c++17 -o engine_test src/main.cpp src/AssetManager.cpp
         ./engine_test
         echo "Build successful!"
+
+    - name: Upload Test Output
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-output
+        path: test_output.ppm
