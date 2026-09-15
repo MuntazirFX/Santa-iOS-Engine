@@ -18,6 +18,7 @@ jobs:
         echo "Build process shuru ho raha hai..."
         clang++ -std=c++17 -o engine_test src/main.cpp src/AssetManager.cpp
         ./engine_test
+        ls -la test_output.ppm
         echo "Build successful!"
 
     - name: Upload Test Output
