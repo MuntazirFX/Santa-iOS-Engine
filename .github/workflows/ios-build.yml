@@ -16,7 +16,7 @@ jobs:
     - name: Compile C++ Code
       run: |
         echo "Build process shuru ho raha hai..."
-        # Nayi line: Dono cpp files ko compile karein
-        clang++ -std=c++11 -o engine_test src/main.cpp src/AssetManager.cpp
+        # Yahan -std=c++17 add karna zaroori hai
+        clang++ -std=c++17 -o engine_test src/main.cpp src/AssetManager.cpp
         ./engine_test
         echo "Build successful!"
