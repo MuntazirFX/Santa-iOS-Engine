@@ -1,6 +1,7 @@
 #include <iostream>
+#include <fstream>
 #include <iomanip>
-#include "AssetManager.h"
+#include <vector>
 
 void printHexDump(const std::vector<uint8_t>& data, size_t count) {
     for (size_t i = 0; i < data.size() && i < count; ++i) {
@@ -13,21 +14,27 @@ void printHexDump(const std::vector<uint8_t>& data, size_t count) {
 int main() {
     std::cout << "Santa iOS Engine Started!" << std::endl;
 
-    AssetManager assetMgr;
-    if (assetMgr.loadXPK("assets/xmas.xpk")) {
-        std::string testFile = "data\\elements.txt";
-        std::vector<uint8_t> data = assetMgr.getAssetData(testFile);
-
-        if (!data.empty()) {
-            std::cout << "Loaded: " << testFile << " | Size: " << data.size() << " bytes" << std::endl;
-            std::cout << "Hex Dump (First 32 bytes): " << std::endl;
-            printHexDump(data, 32);
-        } else {
-            std::cout << "Failed to load asset." << std::endl;
-        }
-    } else {
-        std::cout << "Failed to load XPK." << std::endl;
+    std::ifstream file("assets/xmas.xpk", std::ios::binary);
+    if (!file.is_open()) {
+        std::cerr << "Error: assets/xmas.xpk file nahi mili!" << std::endl;
+        return 1;
     }
+
+    // Pehli file (data\elements.txt) ka offset aur size
+    uint32_t firstFileOffset = 3843;
+    uint32_t firstFileSize = 3127;
+    
+    // Dusri file (effects\fire.txt) ka offset calculate karein
+    uint32_t secondFileOffset = firstFileOffset + firstFileSize; // 6970
+
+    std::cout << "Second file (effects\\fire.txt) offset: " << secondFileOffset << std::endl;
+
+    file.seekg(secondFileOffset, std::ios::beg);
+    std::vector<uint8_t> data(64);
+    file.read(reinterpret_cast<char*>(data.data()), 64);
+
+    std::cout << "Hex Dump (First 64 bytes): " << std::endl;
+    printHexDump(data, 64);
 
     return 0;
 }
