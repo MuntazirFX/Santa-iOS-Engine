@@ -1,5 +1,6 @@
 #include "AssetManager.h"
 #include <iostream>
+#include <algorithm>
 
 AssetManager::~AssetManager() {
     if (xpkFile.is_open()) {
@@ -21,7 +22,9 @@ bool AssetManager::loadXPK(const std::string& filepath) {
     xpkFile.read(reinterpret_cast<char*>(offsets.data()), fileCount * sizeof(uint32_t));
 
     uint32_t headerSize = 4 + (fileCount * 4);
+    uint32_t metadataEnd = headerSize;
 
+    // Pehla pass: Saari metadata parhein aur data section ka aakhri hissa dhoondein
     for (uint32_t i = 0; i < fileCount; ++i) {
         xpkFile.seekg(headerSize + offsets[i], std::ios::beg);
         
@@ -37,9 +40,20 @@ bool AssetManager::loadXPK(const std::string& filepath) {
         XPKEntry entry;
         entry.filename = filename;
         entry.size = fileSize;
-        entry.rawOffset = offsets[i]; // Asal offset save karein
+        entry.offset = 0; // Placeholder
 
         fileTable[filename] = entry;
+
+        // Metadata ka end dhoondein
+        uint32_t currentMetadataEnd = headerSize + offsets[i] + 4 + filename.length() + 1;
+        metadataEnd = std::max(metadataEnd, currentMetadataEnd);
+    }
+
+    // Doosra pass: Data ka absolute offset calculate karein
+    uint32_t currentDataOffset = metadataEnd;
+    for (auto& pair : fileTable) {
+        pair.second.offset = currentDataOffset;
+        currentDataOffset += pair.second.size;
     }
 
     std::cout << "XPK loaded successfully! Total " << fileTable.size() << " files ready in memory." << std::endl;
@@ -49,11 +63,8 @@ bool AssetManager::loadXPK(const std::string& filepath) {
 std::vector<uint8_t> AssetManager::getAssetData(const std::string& filename) {
     auto it = fileTable.find(filename);
     if (it != fileTable.end()) {
-        // Data metadata ke foran baad shuru hota hai
-        uint32_t dataStart = 4 + (fileTable.size() * 4) + it->second.rawOffset + 4 + it->second.filename.length() + 1;
-        
         std::vector<uint8_t> data(it->second.size);
-        xpkFile.seekg(dataStart, std::ios::beg);
+        xpkFile.seekg(it->second.offset, std::ios::beg);
         xpkFile.read(reinterpret_cast<char*>(data.data()), it->second.size);
         return data;
     }
