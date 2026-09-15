@@ -2,7 +2,6 @@
 #include <iomanip>
 #include "AssetManager.h"
 
-// Data ko hex format mein print karne ke liye helper function
 void printHexDump(const std::vector<uint8_t>& data, size_t count) {
     for (size_t i = 0; i < data.size() && i < count; ++i) {
         std::cout << std::hex << std::setw(2) << std::setfill('0') << (int)data[i] << " ";
@@ -17,22 +16,26 @@ int main() {
     AssetManager assetMgr;
     if (assetMgr.loadXPK("assets/xmas.xpk")) {
         
-        // Test 1: elements.txt
-        std::string testFile1 = "data\\elements.txt";
-        std::vector<uint8_t> data1 = assetMgr.getAssetData(testFile1);
-        if (!data1.empty()) {
-            std::cout << "Loaded: " << testFile1 << " | Size: " << data1.size() << " bytes" << std::endl;
+        std::string testFile = "data\\elements.txt";
+        std::vector<uint8_t> data = assetMgr.getAssetData(testFile);
+        
+        if (!data.empty()) {
+            std::cout << "Loaded: " << testFile << " | Size: " << data.size() << " bytes" << std::endl;
             std::cout << "Hex Dump (First 32 bytes): " << std::endl;
-            printHexDump(data1, 32);
-        }
-
-        // Test 2: Ek texture file (TGA image)
-        std::string testFile2 = "maps\\mouse.tga";
-        std::vector<uint8_t> data2 = assetMgr.getAssetData(testFile2);
-        if (!data2.empty()) {
-            std::cout << "Loaded: " << testFile2 << " | Size: " << data2.size() << " bytes" << std::endl;
-            std::cout << "Hex Dump (First 32 bytes): " << std::endl;
-            printHexDump(data2, 32);
+            printHexDump(data, 32);
+            
+            // Compression check
+            if (data.size() >= 2) {
+                if (data[0] == 0x1f && data[1] == 0x8b) {
+                    std::cout << ">> Detected: GZIP Compression" << std::endl;
+                } else if (data[0] == 0x78 && (data[1] == 0x9c || data[1] == 0x01 || data[1] == 0xda)) {
+                    std::cout << ">> Detected: ZLIB Compression" << std::endl;
+                } else {
+                    std::cout << ">> Detected: Uncompressed / Unknown" << std::endl;
+                }
+            }
+        } else {
+            std::cout << "Failed to load asset." << std::endl;
         }
     } else {
         std::cout << "Failed to load XPK." << std::endl;
