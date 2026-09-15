@@ -7,7 +7,7 @@
 
 struct XPKEntry {
     std::string filename;
-    uint32_t offset; // File data file mein kahan se shuru hota hai
+    uint32_t rawOffset; // Header se asal offset
     uint32_t size;
 };
 
