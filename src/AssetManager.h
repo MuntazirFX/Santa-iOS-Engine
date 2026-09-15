@@ -3,10 +3,11 @@
 #include <vector>
 #include <fstream>
 #include <cstdint>
+#include <unordered_map>
 
 struct XPKEntry {
     std::string filename;
-    uint32_t offset;
+    uint32_t offset; // File data file mein kahan se shuru hota hai
     uint32_t size;
 };
 
@@ -20,5 +21,5 @@ public:
 
 private:
     std::ifstream xpkFile;
-    std::vector<XPKEntry> fileTable;
+    std::unordered_map<std::string, XPKEntry> fileTable;
 };
