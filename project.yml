@@ -12,3 +12,5 @@ targets:
       INFOPLIST_FILE: ios/Info.plist
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGNING_REQUIRED: NO
+    dependencies:
+      - sdk: UIKit.framework
