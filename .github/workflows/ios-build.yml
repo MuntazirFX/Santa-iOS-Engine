@@ -3,11 +3,11 @@ name: iOS Build on macOS Runner
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Manual trigger ke liye
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest # Free macOS runner use karein
+    runs-on: macos-latest
 
     steps:
     - name: Checkout Code
@@ -16,7 +16,7 @@ jobs:
     - name: Compile C++ Code
       run: |
         echo "Build process shuru ho raha hai..."
-        # macOS runner mein clang++ pehle se hota hai
-        clang++ -o engine_test src/main.cpp
+        # Nayi line: Dono cpp files ko compile karein
+        clang++ -std=c++11 -o engine_test src/main.cpp src/AssetManager.cpp
         ./engine_test
         echo "Build successful!"
