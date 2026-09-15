@@ -2,9 +2,18 @@
 #include <fstream>
 #include <vector>
 #include <string>
+#include <filesystem>
+#include <algorithm>
+
+namespace fs = std::filesystem;
+
+struct FileEntry {
+    std::string filename;
+    uint32_t size;
+};
 
 int main() {
-    std::cout << "Santa iOS Engine Started!" << std::endl;
+    std::cout << "Santa iOS Engine - XPK Extractor" << std::endl;
 
     std::ifstream file("assets/xmas.xpk", std::ios::binary);
     if (!file.is_open()) {
@@ -12,23 +21,22 @@ int main() {
         return 1;
     }
 
-    // Header se File Count parhein
+    // Header parhein
     uint32_t fileCount = 0;
     file.read(reinterpret_cast<char*>(&fileCount), sizeof(fileCount));
     std::cout << "Total Files: " << fileCount << std::endl;
 
-    // Saare offsets parhein
     std::vector<uint32_t> offsets(fileCount);
     file.read(reinterpret_cast<char*>(offsets.data()), fileCount * sizeof(uint32_t));
 
-    // Header ka size calculate karein
     uint32_t headerSize = 4 + (fileCount * 4);
     std::cout << "Header Size: " << headerSize << " bytes" << std::endl;
-    std::cout << "----------------------------------------" << std::endl;
 
-    // Har file ka size aur naam print karein
+    // Metadata (size + filename) parhein
+    std::vector<FileEntry> fileEntries;
+    uint32_t totalMetadataSize = 0;
+    
     for (uint32_t i = 0; i < fileCount; ++i) {
-        // AHEM FIX: Offset ko header size ke saath add karein
         file.seekg(headerSize + offsets[i], std::ios::beg);
         
         uint32_t fileSize = 0;
@@ -40,8 +48,41 @@ int main() {
             filename += ch;
         }
 
-        std::cout << "File: " << filename << " | Size: " << fileSize << " bytes" << std::endl;
+        fileEntries.push_back({filename, fileSize});
+        totalMetadataSize = offsets[i] + 4 + filename.length() + 1;
     }
 
+    // Data section kahan se shuru hota hai
+    uint32_t dataStart = headerSize + totalMetadataSize;
+    std::cout << "Data starts at: " << dataStart << std::endl;
+
+    // 'extracted' folder banayein
+    fs::create_directory("extracted");
+
+    // Har file ko extract karein
+    for (const auto& entry : fileEntries) {
+        std::string outPath = "extracted/" + entry.filename;
+        std::replace(outPath.begin(), outPath.end(), '\\', '/'); // Windows paths ko Mac/Linux paths mein badlein
+
+        fs::path p(outPath);
+        fs::create_directories(p.parent_path()); // Folder banayein (jaise extracted/maps/)
+
+        std::ofstream outFile(outPath, std::ios::binary);
+        if (!outFile.is_open()) {
+            std::cerr << "Failed to create: " << outPath << std::endl;
+            continue;
+        }
+
+        file.seekg(dataStart, std::ios::beg);
+        std::vector<char> buffer(entry.size);
+        file.read(buffer.data(), entry.size);
+        outFile.write(buffer.data(), entry.size);
+        outFile.close();
+
+        std::cout << "Extracted: " << entry.filename << " | Size: " << entry.size << " bytes" << std::endl;
+        dataStart += entry.size; // Agli file ke data par jayein
+    }
+
+    std::cout << "Extraction Complete!" << std::endl;
     return 0;
 }
