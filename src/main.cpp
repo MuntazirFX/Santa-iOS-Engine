@@ -21,11 +21,15 @@ int main() {
     std::vector<uint32_t> offsets(fileCount);
     file.read(reinterpret_cast<char*>(offsets.data()), fileCount * sizeof(uint32_t));
 
+    // Header ka size calculate karein
+    uint32_t headerSize = 4 + (fileCount * 4);
+    std::cout << "Header Size: " << headerSize << " bytes" << std::endl;
     std::cout << "----------------------------------------" << std::endl;
 
     // Har file ka size aur naam print karein
     for (uint32_t i = 0; i < fileCount; ++i) {
-        file.seekg(offsets[i], std::ios::beg);
+        // AHEM FIX: Offset ko header size ke saath add karein
+        file.seekg(headerSize + offsets[i], std::ios::beg);
         
         uint32_t fileSize = 0;
         file.read(reinterpret_cast<char*>(&fileSize), sizeof(fileSize));
