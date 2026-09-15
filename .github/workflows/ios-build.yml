@@ -18,11 +18,33 @@ jobs:
         echo "Build process shuru ho raha hai..."
         clang++ -std=c++17 -o engine_test src/main.cpp src/AssetManager.cpp
         ./engine_test
-        ls -la test_output.ppm
         echo "Build successful!"
 
-    - name: Upload Test Output
+    - name: Install XcodeGen
+      run: brew install xcodegen
+
+    - name: Generate Xcode Project
+      run: xcodegen generate
+
+    - name: Build iOS App
+      run: |
+        xcodebuild build \
+          -project SantaEngine.xcodeproj \
+          -scheme SantaEngine \
+          -sdk iphoneos \
+          -configuration Release \
+          -derivedDataPath build \
+          CODE_SIGNING_ALLOWED=NO \
+          CODE_SIGNING_REQUIRED=NO
+
+    - name: Package into IPA
+      run: |
+        mkdir -p Payload
+        cp -r build/Build/Products/Release-iphoneos/SantaEngine.app Payload/
+        zip -r SantaEngine.ipa Payload
+
+    - name: Upload IPA Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: test-output
-        path: test_output.ppm
+        name: SantaEngine-IPA
+        path: SantaEngine.ipa
