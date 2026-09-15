@@ -15,25 +15,13 @@ int main() {
 
     AssetManager assetMgr;
     if (assetMgr.loadXPK("assets/xmas.xpk")) {
-        
         std::string testFile = "data\\elements.txt";
         std::vector<uint8_t> data = assetMgr.getAssetData(testFile);
-        
+
         if (!data.empty()) {
             std::cout << "Loaded: " << testFile << " | Size: " << data.size() << " bytes" << std::endl;
             std::cout << "Hex Dump (First 32 bytes): " << std::endl;
             printHexDump(data, 32);
-            
-            // Compression check
-            if (data.size() >= 2) {
-                if (data[0] == 0x1f && data[1] == 0x8b) {
-                    std::cout << ">> Detected: GZIP Compression" << std::endl;
-                } else if (data[0] == 0x78 && (data[1] == 0x9c || data[1] == 0x01 || data[1] == 0xda)) {
-                    std::cout << ">> Detected: ZLIB Compression" << std::endl;
-                } else {
-                    std::cout << ">> Detected: Uncompressed / Unknown" << std::endl;
-                }
-            }
         } else {
             std::cout << "Failed to load asset." << std::endl;
         }
