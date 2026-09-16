@@ -56,6 +56,13 @@
     
     NSLog(@"[GameEngine] TGA Loaded: %dx%d @ %d BPP (%d bytes)", width, height, bpp, pixelDataSize);
     
+    // Debug: pehle 16 pixel bytes dikhayein
+    NSMutableString *hexDump = [NSMutableString string];
+    for (int i = 0; i < 16 && i < pixelData.size(); i++) {
+        [hexDump appendFormat:@"%02x ", pixelData[i]];
+    }
+    NSLog(@"[GameEngine] First 16 pixel bytes: %@", hexDump);
+    
     return [NSData dataWithBytes:pixelData.data() length:pixelDataSize];
 }
 
