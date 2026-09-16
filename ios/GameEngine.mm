@@ -27,43 +27,20 @@
     return status;
 }
 
-+ (NSData *)loadTGATextureData {
+// Kisi bhi asset ko XPK se load karein
++ (NSData *)loadAssetNamed:(NSString *)name {
     NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!resourcePath) return nil;
     
-    std::ifstream file([resourcePath UTF8String], std::ios::binary);
-    if (!file.is_open()) return nil;
+    std::string xpkPath = [resourcePath UTF8String];
+    AssetManager assetMgr;
+    if (!assetMgr.loadXPK(xpkPath)) return nil;
     
-// 256x256 wala texture try karein (zyada rangeen ho sakta hai)
-    uint32_t tgaOffset = 6205594;
+    std::string assetName = [name UTF8String];
+    std::vector<uint8_t> data = assetMgr.getAssetData(assetName);
     
-    file.seekg(tgaOffset, std::ios::beg);
-    unsigned char header[18];
-    file.read(reinterpret_cast<char*>(header), 18);
-    
-    uint8_t idLength = header[0];
-    uint16_t width = header[12] | (header[13] << 8);
-    uint16_t height = header[14] | (header[15] << 8);
-    uint8_t bpp = header[16];
-    
-    uint32_t pixelDataOffset = tgaOffset + 18 + idLength;
-    uint32_t pixelDataSize = width * height * (bpp / 8);
-    
-    file.seekg(pixelDataOffset, std::ios::beg);
-    std::vector<uint8_t> pixelData(pixelDataSize);
-    file.read(reinterpret_cast<char*>(pixelData.data()), pixelDataSize);
-    file.close();
-    
-    NSLog(@"[GameEngine] TGA Loaded: %dx%d @ %d BPP (%d bytes)", width, height, bpp, pixelDataSize);
-    
-    // Debug: pehle 16 pixel bytes dikhayein
-    NSMutableString *hexDump = [NSMutableString string];
-    for (int i = 0; i < 16 && i < pixelData.size(); i++) {
-        [hexDump appendFormat:@"%02x ", pixelData[i]];
-    }
-    NSLog(@"[GameEngine] First 16 pixel bytes: %@", hexDump);
-    
-    return [NSData dataWithBytes:pixelData.data() length:pixelDataSize];
+    if (data.empty()) return nil;
+    return [NSData dataWithBytes:data.data() length:data.size()];
 }
 
 @end
