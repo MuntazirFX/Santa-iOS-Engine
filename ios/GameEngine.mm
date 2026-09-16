@@ -89,39 +89,45 @@
     size_t totalSize = xpkData.length;
     NSMutableString *out = [NSMutableString string];
     
-    // Saare xof offsets dhoondein
-    std::vector<size_t> offsets;
-    for (size_t i = 0; i < totalSize - 12; i++) {
-        if (bytes[i] == 'x' && bytes[i+1] == 'o' && bytes[i+2] == 'f' && bytes[i+3] == ' ') {
-            offsets.push_back(i);
-            i += 200;
+    // Search for "weihnachtsman" in RAW XPK bytes (fast!)
+    const char *needle = "weihnachtsman";
+    size_t needleLen = 13;
+    int found = 0;
+    
+    for (size_t i = 0; i < totalSize - needleLen; i++) {
+        if (bytes[i] != 'w' && bytes[i] != 'W') continue;
+        
+        bool match = true;
+        for (size_t m = 0; m < needleLen; m++) {
+            char c = (char)bytes[i + m];
+            if (c >= 'A' && c <= 'Z') c += 32;
+            if (c != needle[m]) { match = false; break; }
         }
-    }
-    
-    [out appendFormat:@"Scanning %zu X-Files for 'weihnacht'...\n\n", offsets.size()];
-    
-    for (size_t off : offsets) {
-        @autoreleasepool {
-            std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + off, totalSize - off);
-            if (decompressed.size() < 16) continue;
-            
-            const char *needle = "weihnacht";
-            size_t needleLen = 9;
-            for (size_t k = 0; k + needleLen < decompressed.size(); k++) {
-                bool match = true;
-                for (size_t m = 0; m < needleLen; m++) {
-                    char c = (char)decompressed[k + m];
-                    if (c >= 'A' && c <= 'Z') c += 32;
-                    if (c != needle[m]) { match = false; break; }
-                }
-                if (match) {
-                    [out appendFormat:@"✓ SANTA at offset @%zu (size %lu)\n", off, (unsigned long)decompressed.size()];
-                    break;
-                }
+        if (match) {
+            // Read size field (4 bytes before this filename)
+            uint32_t sizeBefore = 0;
+            if (i >= 4) {
+                sizeBefore = bytes[i-4] | (bytes[i-3] << 8) | (bytes[i-2] << 16) | (bytes[i-1] << 24);
             }
+            
+            [out appendFormat:@"@%zu: size_field=%u\n", i, sizeBefore];
+            
+            // Show 32 bytes around for context
+            [out appendString:@"  Around: "];
+            for (int k = 0; k < 50 && i + k < totalSize; k++) {
+                char c = (char)bytes[i + k];
+                if (c >= 32 && c < 127) [out appendFormat:@"%c", c];
+                else if (c == 0) { [out appendString:@"|"]; break; }
+                else [out appendString:@"."];
+            }
+            [out appendString:@"\n\n"];
+            
+            found++;
+            if (found >= 6) break;
         }
     }
     
+    [out appendFormat:@"Total occurrences: %d\n", found];
     return out;
 }
 
