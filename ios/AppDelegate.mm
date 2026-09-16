@@ -22,8 +22,8 @@
     tv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [vc.view addSubview:tv];
     
-    // Santa directly @960968 se extract karein
-    MeshData *mesh = [GameEngine extractMeshAtOffset:960968];
+    // Santa directly @960968 se extract karein — ALL MESHES
+    MeshData *mesh = [GameEngine extractAllMeshesAtOffset:960968];
     
     if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
         NSString *tex = mesh.textureName ? [mesh.textureName lastPathComponent] : @"(none)";
