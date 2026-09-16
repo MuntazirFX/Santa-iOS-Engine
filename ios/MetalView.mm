@@ -5,84 +5,100 @@
 @implementation MetalView {
     id<MTLDevice> _device;
     id<MTLCommandQueue> _commandQueue;
-    id<MTLRenderPipelineState> _pipelineState;      // textured quad
-    id<MTLRenderPipelineState> _meshPipelineState;  // 3D wireframe
+    id<MTLRenderPipelineState> _meshPipelineState;
     id<MTLTexture> _texture;
     id<MTLSamplerState> _sampler;
-    id<MTLBuffer> _meshBuffer;
-    int _meshVertexCount;
+    id<MTLDepthStencilState> _depthState;
+    id<MTLTexture> _depthTexture;
+    id<MTLBuffer> _vertexBuffer;
+    id<MTLBuffer> _indexBuffer;
+    int _indexCount;
     int _frameCount;
+    float _angle;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
     _device = MTLCreateSystemDefaultDevice();
     self = [super initWithFrame:frame device:_device];
     if (self) {
-        self.clearColor = MTLClearColorMake(0.05, 0.05, 0.1, 1.0);
+        self.clearColor = MTLClearColorMake(0.05, 0.05, 0.15, 1.0);
         self.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
+        self.depthStencilPixelFormat = MTLPixelFormatDepth32Float;
         self.preferredFramesPerSecond = 60;
         self.delegate = self;
         self.paused = NO;
         self.enableSetNeedsDisplay = NO;
         
         _frameCount = 0;
-        _meshVertexCount = 0;
+        _angle = 0;
+        _indexCount = 0;
         _commandQueue = [_device newCommandQueue];
         
-        [self createTexture];
-        
         MTLSamplerDescriptor *sampDesc = [[MTLSamplerDescriptor alloc] init];
-        sampDesc.minFilter = MTLSamplerMinMagFilterNearest;
-        sampDesc.magFilter = MTLSamplerMinMagFilterNearest;
-        sampDesc.sAddressMode = MTLSamplerAddressModeClampToEdge;
-        sampDesc.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        sampDesc.minFilter = MTLSamplerMinMagFilterLinear;
+        sampDesc.magFilter = MTLSamplerMinMagFilterLinear;
+        sampDesc.sAddressMode = MTLSamplerAddressModeRepeat;
+        sampDesc.tAddressMode = MTLSamplerAddressModeRepeat;
         _sampler = [_device newSamplerStateWithDescriptor:sampDesc];
         
+        MTLDepthStencilDescriptor *depthDesc = [[MTLDepthStencilDescriptor alloc] init];
+        depthDesc.depthCompareFunction = MTLCompareFunctionLess;
+        depthDesc.depthWriteEnabled = YES;
+        _depthState = [_device newDepthStencilStateWithDescriptor:depthDesc];
+        
         id<MTLLibrary> library = [_device newDefaultLibrary];
+        id<MTLFunction> vf = [library newFunctionWithName:@"mesh_vertex"];
+        id<MTLFunction> ff = [library newFunctionWithName:@"mesh_fragment"];
         
-        // Quad pipeline
-        {
-            id<MTLFunction> vf = [library newFunctionWithName:@"vertex_main"];
-            id<MTLFunction> ff = [library newFunctionWithName:@"fragment_main"];
-            MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
-            desc.vertexFunction = vf;
-            desc.fragmentFunction = ff;
-            desc.colorAttachments[0].pixelFormat = self.colorPixelFormat;
-            NSError *err = nil;
-            _pipelineState = [_device newRenderPipelineStateWithDescriptor:desc error:&err];
-        }
+        MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+        desc.vertexFunction = vf;
+        desc.fragmentFunction = ff;
+        desc.colorAttachments[0].pixelFormat = self.colorPixelFormat;
+        desc.depthAttachmentPixelFormat = self.depthStencilPixelFormat;
         
-        // Mesh pipeline
-        {
-            id<MTLFunction> vf = [library newFunctionWithName:@"mesh_vertex"];
-            id<MTLFunction> ff = [library newFunctionWithName:@"mesh_fragment"];
-            MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
-            desc.vertexFunction = vf;
-            desc.fragmentFunction = ff;
-            desc.colorAttachments[0].pixelFormat = self.colorPixelFormat;
-            NSError *err = nil;
-            _meshPipelineState = [_device newRenderPipelineStateWithDescriptor:desc error:&err];
-            if (!_meshPipelineState) NSLog(@"[MetalView] Mesh pipeline failed: %@", err);
-            else NSLog(@"[MetalView] Mesh pipeline ready!");
-        }
+        NSError *err = nil;
+        _meshPipelineState = [_device newRenderPipelineStateWithDescriptor:desc error:&err];
+        if (!_meshPipelineState) NSLog(@"[MetalView] Pipeline failed: %@", err);
+        else NSLog(@"[MetalView] Textured pipeline ready");
     }
     return self;
 }
 
-- (void)createTexture {
-    // Empty texture (we're only rendering mesh now)
-    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:4 height:4 mipmapped:NO];
+- (id<MTLTexture>)loadTGATextureNamed:(NSString *)name {
+    NSData *tgaData = [GameEngine loadAssetNamed:name];
+    if (!tgaData || tgaData.length < 18) {
+        NSLog(@"[MetalView] TGA not found: %@", name);
+        return nil;
+    }
+    
+    const uint8_t *bytes = (const uint8_t *)tgaData.bytes;
+    uint16_t width = bytes[12] | (bytes[13] << 8);
+    uint16_t height = bytes[14] | (bytes[15] << 8);
+    uint8_t bpp = bytes[16];
+    
+    NSLog(@"[MetalView] Loading TGA: %@ (%dx%d @ %dbpp)", name, width, height, bpp);
+    
+    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
     texDesc.usage = MTLTextureUsageShaderRead;
-    _texture = [_device newTextureWithDescriptor:texDesc];
+    id<MTLTexture> tex = [_device newTextureWithDescriptor:texDesc];
+    
+    if (tex) {
+        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height)
+                mipmapLevel:0
+                  withBytes:(bytes + 18)
+                bytesPerRow:width * (bpp / 8)];
+    }
+    return tex;
 }
 
 - (void)setMeshToRender:(MeshData *)mesh {
     if (!mesh || mesh.vertexCount == 0) return;
     
     const float *verts = (const float *)mesh.vertices.bytes;
+    const float *uvs = (const float *)mesh.uvs.bytes;
     const uint32_t *faces = (const uint32_t *)mesh.indices.bytes;
     
-    // Find bounding box
+    // Bounding box for normalization
     float minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
     for (int i = 0; i < mesh.vertexCount; i++) {
         float x = verts[i*3], y = verts[i*3+1], z = verts[i*3+2];
@@ -90,89 +106,107 @@
         if (y < minY) minY = y; if (y > maxY) maxY = y;
         if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
     }
-    
-    float cx = (minX + maxX) / 2.0f;
-    float cy = (minY + maxY) / 2.0f;
-    float cz = (minZ + maxZ) / 2.0f;
-    float maxDim = fmaxf(maxX - minX, fmaxf(maxY - minY, maxZ - minZ));
+    float cx = (minX+maxX)/2, cy = (minY+maxY)/2, cz = (minZ+maxZ)/2;
+    float maxDim = fmaxf(maxX-minX, fmaxf(maxY-minY, maxZ-minZ));
     float scale = 1.6f / maxDim;
     
-    NSLog(@"[MetalView] Mesh bounds: %.1f,%.1f,%.1f to %.1f,%.1f,%.1f | scale=%.4f",
-          minX, minY, minZ, maxX, maxY, maxZ, scale);
+    // Interleave vertices + UVs (5 floats per vertex)
+    float *vbuf = new float[mesh.vertexCount * 5];
+    for (int i = 0; i < mesh.vertexCount; i++) {
+        vbuf[i*5+0] = (verts[i*3+0] - cx) * scale;
+        vbuf[i*5+1] = (verts[i*3+1] - cy) * scale;
+        vbuf[i*5+2] = (verts[i*3+2] - cz) * scale;
+        if (uvs) {
+            vbuf[i*5+3] = uvs[i*2+0];
+            vbuf[i*5+4] = 1.0f - uvs[i*2+1]; // V-flip
+        } else {
+            vbuf[i*5+3] = 0.5f;
+            vbuf[i*5+4] = 0.5f;
+        }
+    }
+    _vertexBuffer = [_device newBufferWithBytes:vbuf length:mesh.vertexCount*5*sizeof(float) options:MTLResourceStorageModeShared];
+    delete[] vbuf;
     
-    // Wireframe colors — rainbow based on face index
-    float colors[8][3] = {
-        {1.0, 0.3, 0.3}, {0.3, 1.0, 0.3}, {0.3, 0.3, 1.0}, {1.0, 1.0, 0.3},
-        {1.0, 0.3, 1.0}, {0.3, 1.0, 1.0}, {1.0, 0.6, 0.2}, {0.6, 0.2, 1.0}
-    };
+    // Index buffer
+    _indexBuffer = [_device newBufferWithBytes:faces length:mesh.faceCount*3*sizeof(uint32_t) options:MTLResourceStorageModeShared];
+    _indexCount = mesh.faceCount * 3;
     
-    // Each face = triangle = 3 edges = 6 vertices (position + RGBA)
-    int lineVertCount = mesh.faceCount * 6;
-    float *lineData = new float[lineVertCount * 7];
-    
-    int out = 0;
-    for (int f = 0; f < mesh.faceCount; f++) {
-        uint32_t i0 = faces[f*3], i1 = faces[f*3+1], i2 = faces[f*3+2];
-        if (i0 >= mesh.vertexCount || i1 >= mesh.vertexCount || i2 >= mesh.vertexCount) continue;
+    // Load texture
+    if (mesh.textureName) {
+        // Extract filename from full path (e.g., "D:\...\haus2.tga" → "haus2.tga")
+        NSString *fullPath = mesh.textureName;
+        NSString *filename = [fullPath lastPathComponent];
+        NSLog(@"[MetalView] Texture referenced: %@", filename);
         
-        float *c = colors[f % 8];
-        
-        // Vertex positions normalized
-        float p0[3] = {(verts[i0*3]-cx)*scale, (verts[i0*3+1]-cy)*scale, (verts[i0*3+2]-cz)*scale};
-        float p1[3] = {(verts[i1*3]-cx)*scale, (verts[i1*3+1]-cy)*scale, (verts[i1*3+2]-cz)*scale};
-        float p2[3] = {(verts[i2*3]-cx)*scale, (verts[i2*3+1]-cy)*scale, (verts[i2*3+2]-cz)*scale};
-        
-        // Edge 1: p0 → p1
-        float *v = &lineData[out * 7];
-        v[0]=p0[0]; v[1]=p0[1]; v[2]=p0[2]; v[3]=c[0]; v[4]=c[1]; v[5]=c[2]; v[6]=1.0;
-        out++;
-        v = &lineData[out * 7];
-        v[0]=p1[0]; v[1]=p1[1]; v[2]=p1[2]; v[3]=c[0]; v[4]=c[1]; v[5]=c[2]; v[6]=1.0;
-        out++;
-        
-        // Edge 2: p1 → p2
-        v = &lineData[out * 7];
-        v[0]=p1[0]; v[1]=p1[1]; v[2]=p1[2]; v[3]=c[0]; v[4]=c[1]; v[5]=c[2]; v[6]=1.0;
-        out++;
-        v = &lineData[out * 7];
-        v[0]=p2[0]; v[1]=p2[1]; v[2]=p2[2]; v[3]=c[0]; v[4]=c[1]; v[5]=c[2]; v[6]=1.0;
-        out++;
-        
-        // Edge 3: p2 → p0
-        v = &lineData[out * 7];
-        v[0]=p2[0]; v[1]=p2[1]; v[2]=p2[2]; v[3]=c[0]; v[4]=c[1]; v[5]=c[2]; v[6]=1.0;
-        out++;
-        v = &lineData[out * 7];
-        v[0]=p0[0]; v[1]=p0[1]; v[2]=p0[2]; v[3]=c[0]; v[4]=c[1]; v[5]=c[2]; v[6]=1.0;
-        out++;
+        // Try different XPK paths
+        NSArray *tryPaths = @[
+            [NSString stringWithFormat:@"maps\\%@", filename],
+            filename,
+            [NSString stringWithFormat:@"maps\\%@", [filename stringByReplacingOccurrencesOfString:@".tga" withString:@".dds"]],
+        ];
+        for (NSString *p in tryPaths) {
+            _texture = [self loadTGATextureNamed:p];
+            if (_texture) break;
+        }
     }
     
-    _meshVertexCount = out;
-    _meshBuffer = [_device newBufferWithBytes:lineData length:out * 7 * sizeof(float) options:MTLResourceStorageModeShared];
-    delete[] lineData;
+    if (!_texture) {
+        // Fallback
+        _texture = [self loadTGATextureNamed:@"maps\\mouse.tga"];
+    }
     
-    NSLog(@"[MetalView] Mesh buffer created: %d vertices (lines)", _meshVertexCount);
+    NSLog(@"[MetalView] Mesh ready: %d verts, %d indices, texture: %@",
+          mesh.vertexCount, _indexCount, _texture ? @"YES" : @"NO");
 }
 
-- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
+- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
+    // Recreate depth texture
+    MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:size.width height:size.height mipmapped:NO];
+    desc.usage = MTLTextureUsageRenderTarget;
+    desc.storageMode = MTLStorageModePrivate;
+    _depthTexture = [_device newTextureWithDescriptor:desc];
+}
 
 - (void)drawInMTKView:(MTKView *)view {
+    if (!_meshPipelineState || _indexCount == 0) return;
+    
     _frameCount++;
-    if (_frameCount <= 3) NSLog(@"[MetalView] draw frame %d (mesh verts: %d)", _frameCount, _meshVertexCount);
+    _angle += 0.01f; // Rotation speed
+    
+    if (_frameCount <= 5) NSLog(@"[MetalView] Draw frame %d", _frameCount);
+    
+    // Ensure depth texture
+    if (!_depthTexture) {
+        CGSize s = view.drawableSize;
+        MTLTextureDescriptor *desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float width:s.width height:s.height mipmapped:NO];
+        desc.usage = MTLTextureUsageRenderTarget;
+        _depthTexture = [_device newTextureWithDescriptor:desc];
+    }
     
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
     if (!rpd) return;
     
+    rpd.depthAttachment.texture = _depthTexture;
+    rpd.depthAttachment.clearDepth = 1.0;
+    rpd.depthAttachment.loadAction = MTLLoadActionClear;
+    rpd.depthAttachment.storeAction = MTLStoreActionDontCare;
+    
     id<MTLCommandBuffer> cmdBuf = [_commandQueue commandBuffer];
     id<MTLRenderCommandEncoder> enc = [cmdBuf renderCommandEncoderWithDescriptor:rpd];
     
-    if (_meshVertexCount > 0 && _meshPipelineState) {
-        [enc setRenderPipelineState:_meshPipelineState];
-        [enc setVertexBuffer:_meshBuffer offset:0 atIndex:0];
-        [enc drawPrimitives:MTLPrimitiveTypeLine vertexStart:0 vertexCount:_meshVertexCount];
-    }
-    
+    [enc setRenderPipelineState:_meshPipelineState];
+    [enc setDepthStencilState:_depthState];
+    [enc setVertexBuffer:_vertexBuffer offset:0 atIndex:0];
+    [enc setVertexBytes:&_angle length:sizeof(float) atIndex:1];
+    [enc setFragmentTexture:_texture atIndex:0];
+    [enc setFragmentSamplerState:_sampler atIndex:0];
+    [enc drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                    indexCount:_indexCount
+                     indexType:MTLIndexTypeUInt32
+                   indexBuffer:_indexBuffer
+             indexBufferOffset:0];
     [enc endEncoding];
+    
     [cmdBuf presentDrawable:view.currentDrawable];
     [cmdBuf commit];
 }
