@@ -2,6 +2,7 @@
 #include "AssetManager.h"
 #include <string>
 #include <vector>
+#include <fstream>
 
 @implementation GameEngine
 
@@ -11,23 +12,51 @@
     
     NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (resourcePath == nil) {
-        [status appendString:@"ERROR: xmas.xpk not found in bundle!"];
+        [status appendString:@"ERROR: xmas.xpk not found!"];
         return status;
     }
     
-    [status appendFormat:@"Found XPK at: %@\n", [resourcePath lastPathComponent]];
-    
     std::string xpkPath = [resourcePath UTF8String];
-    
     AssetManager assetMgr;
     if (assetMgr.loadXPK(xpkPath)) {
         [status appendString:@"XPK Loaded Successfully!\n"];
         [status appendString:@"177 files ready in memory."];
     } else {
-        [status appendString:@"ERROR: XPK failed to load!"];
+        [status appendString:@"ERROR: XPK failed!"];
     }
-    
     return status;
+}
+
++ (NSData *)loadTGATextureData {
+    NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    if (!resourcePath) return nil;
+    
+    std::ifstream file([resourcePath UTF8String], std::ios::binary);
+    if (!file.is_open()) return nil;
+    
+    // Known TGA offset (64x64, 32 BPP) jo humne pehle dhoonda tha
+    uint32_t tgaOffset = 5642606;
+    
+    file.seekg(tgaOffset, std::ios::beg);
+    unsigned char header[18];
+    file.read(reinterpret_cast<char*>(header), 18);
+    
+    uint8_t idLength = header[0];
+    uint16_t width = header[12] | (header[13] << 8);
+    uint16_t height = header[14] | (header[15] << 8);
+    uint8_t bpp = header[16];
+    
+    uint32_t pixelDataOffset = tgaOffset + 18 + idLength;
+    uint32_t pixelDataSize = width * height * (bpp / 8);
+    
+    file.seekg(pixelDataOffset, std::ios::beg);
+    std::vector<uint8_t> pixelData(pixelDataSize);
+    file.read(reinterpret_cast<char*>(pixelData.data()), pixelDataSize);
+    file.close();
+    
+    NSLog(@"[GameEngine] TGA Loaded: %dx%d @ %d BPP (%d bytes)", width, height, bpp, pixelDataSize);
+    
+    return [NSData dataWithBytes:pixelData.data() length:pixelDataSize];
 }
 
 @end
