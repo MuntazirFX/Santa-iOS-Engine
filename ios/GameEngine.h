@@ -12,7 +12,8 @@
 @interface GameEngine : NSObject
 + (NSString *)startEngine;
 + (NSData *)loadAssetNamed:(NSString *)name;
-+ (NSString *)parseXFileAtOffset:(NSUInteger)offset maxTokens:(int)maxTokens;
 + (MeshData *)extractMeshFromAssetNamed:(NSString *)assetName;
++ (MeshData *)extractMeshAtOffset:(NSUInteger)offset;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
++ (NSString *)scanXPKForXFiles;
 @end
