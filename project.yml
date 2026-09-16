@@ -8,7 +8,9 @@ targets:
     deploymentTarget: "14.0"
     sources:
       - ios
-      - src
+      - path: src
+        excludes:
+          - "main.cpp"
     resources:
       - assets/xmas.xpk
     settings:
