@@ -1,33 +1,50 @@
 #import "AppDelegate.h"
 #import "GameEngine.h"
-#import "MetalView.h"
 
 @implementation AppDelegate
 
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
     
-    NSString *engineStatus = [GameEngine startEngine];
-    NSLog(@"[AppDelegate] %@", engineStatus);
-    
     UIViewController *viewController = [[UIViewController alloc] init];
     viewController.view.backgroundColor = [UIColor blackColor];
     
-    // AHEM FIX: UIScreen.mainScreen.bounds use karein, na ke viewController.view.bounds
-    CGRect screenBounds = [[UIScreen mainScreen] bounds];
-    NSLog(@"[AppDelegate] Screen bounds: %.0fx%.0f", screenBounds.size.width, screenBounds.size.height);
+    // Screen par logs dikhane ke liye TextView
+    UITextView *textView = [[UITextView alloc] initWithFrame:viewController.view.bounds];
+    textView.backgroundColor = [UIColor blackColor];
+    textView.textColor = [UIColor greenColor];
+    textView.font = [UIFont fontWithName:@"Courier" size:11];
+    textView.editable = NO;
+    [viewController.view addSubview:textView];
     
-    MetalView *metalView = [[MetalView alloc] initWithFrame:screenBounds];
-    metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [viewController.view addSubview:metalView];
+    // .x file load karke hex dump screen par dikhayein
+    NSMutableString *output = [NSMutableString string];
+    NSData *xData = [GameEngine loadAssetNamed:@"gfx\\schneemann_000.x"];
     
-// UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 50, screenBounds.size.width, 100)];
-// label.text = engineStatus;
-// label.numberOfLines = 0;
-// label.textColor = [UIColor whiteColor];
-// label.textAlignment = NSTextAlignmentCenter;
-// label.font = [UIFont systemFontOfSize:12];
-// [viewController.view addSubview:label];
+    if (xData && xData.length > 0) {
+        [output appendFormat:@"File size: %lu bytes\n\n", (unsigned long)xData.length];
+        
+        const uint8_t *bytes = (const uint8_t *)xData.bytes;
+        [output appendString:@"First 128 bytes (Hex):\n"];
+        for (int i = 0; i < 128 && i < xData.length; i++) {
+            [output appendFormat:@"%02x ", bytes[i]];
+            if ((i + 1) % 16 == 0) [output appendString:@"\n"];
+        }
+        
+        [output appendString:@"\nASCII:\n"];
+        for (int i = 0; i < 128 && i < xData.length; i++) {
+            char c = (char)bytes[i];
+            if (c >= 32 && c < 127) {
+                [output appendFormat:@"%c", c];
+            } else {
+                [output appendString:@"."];
+            }
+        }
+    } else {
+        [output appendString:@"Failed to load .x file!\nCheck Console/Logs."];
+    }
+    
+    textView.text = output;
     
     self.window.rootViewController = viewController;
     [self.window makeKeyAndVisible];
