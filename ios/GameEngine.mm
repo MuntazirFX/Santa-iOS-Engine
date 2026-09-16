@@ -79,6 +79,53 @@
     return out;
 }
 
+// ============ NEW: Find Santa by string search ============
++ (NSString *)findSantaModel {
+    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
+    if (!xpkData) return @"No XPK";
+    
+    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
+    size_t totalSize = xpkData.length;
+    NSMutableString *out = [NSMutableString string];
+    
+    // Saare xof offsets dhoondein
+    std::vector<size_t> offsets;
+    for (size_t i = 0; i < totalSize - 12; i++) {
+        if (bytes[i] == 'x' && bytes[i+1] == 'o' && bytes[i+2] == 'f' && bytes[i+3] == ' ') {
+            offsets.push_back(i);
+            i += 200;
+        }
+    }
+    
+    [out appendFormat:@"Scanning %zu X-Files for 'weihnacht'...\n\n", offsets.size()];
+    
+    for (size_t off : offsets) {
+        @autoreleasepool {
+            std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + off, totalSize - off);
+            if (decompressed.size() < 16) continue;
+            
+            const char *needle = "weihnacht";
+            size_t needleLen = 9;
+            for (size_t k = 0; k + needleLen < decompressed.size(); k++) {
+                bool match = true;
+                for (size_t m = 0; m < needleLen; m++) {
+                    char c = (char)decompressed[k + m];
+                    if (c >= 'A' && c <= 'Z') c += 32;
+                    if (c != needle[m]) { match = false; break; }
+                }
+                if (match) {
+                    [out appendFormat:@"✓ SANTA at offset @%zu (size %lu)\n", off, (unsigned long)decompressed.size()];
+                    break;
+                }
+            }
+        }
+    }
+    
+    return out;
+}
+
+// ============ Extract mesh at offset ============
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset {
     NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
