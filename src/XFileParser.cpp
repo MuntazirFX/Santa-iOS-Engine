@@ -1,7 +1,13 @@
 #include "XFileParser.h"
 #include <cstring>
+#include <cstdio>
 #include <sstream>
 #include <zlib.h>
+
+std::string& xpkDebugLog() {
+    static std::string log;
+    return log;
+}
 
 static uint32_t readU32(const uint8_t* data, size_t offset) {
     return data[offset] | (data[offset+1] << 8) | (data[offset+2] << 16) | (data[offset+3] << 24);
@@ -11,32 +17,66 @@ static uint16_t readU16(const uint8_t* data, size_t offset) {
     return data[offset] | (data[offset+1] << 8);
 }
 
-// MSZip decompression (bzip format)
-// Format: 16-byte header + 8-byte unknown + CK blocks
+// MSZip decompression with full debug logging
 std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t size) {
+    xpkDebugLog().clear();
     std::vector<uint8_t> output;
-    if (size < 30) return output;
+    if (size < 30) {
+        xpkDebugLog() += "Size too small\n";
+        return output;
+    }
     
-    // Scan for CK blocks starting from byte 16
+    char buf[512];
+    snprintf(buf, sizeof(buf), "Total size: %zu bytes\n", size);
+    xpkDebugLog() += buf;
+    
+    // Print first 32 bytes
+    xpkDebugLog() += "First 32 bytes: ";
+    for (int i = 0; i < 32; i++) {
+        snprintf(buf, sizeof(buf), "%02x ", data[i]);
+        xpkDebugLog() += buf;
+    }
+    xpkDebugLog() += "\n";
+    
     size_t offset = 16;
+    int blockNum = 0;
     
     while (offset + 6 <= size) {
-        // Skip bytes until we find CK marker
+        // Scan for CK
         while (offset + 1 < size && !(data[offset] == 0x43 && data[offset+1] == 0x4B)) {
             offset++;
         }
         if (offset + 6 > size) break;
         
-        offset += 2; // skip "CK"
+        size_t ckPos = offset;
+        offset += 2;
         uint16_t compSize = readU16(data, offset); offset += 2;
         uint16_t uncompSize = readU16(data, offset); offset += 2;
         
-        if (compSize <= 6 || uncompSize == 0) break;
-        if (offset + compSize - 6 > size) break;
+        snprintf(buf, sizeof(buf), "\nBlock %d: CK at %zu, comp=%u, uncomp=%u\n",
+                 blockNum, ckPos, compSize, uncompSize);
+        xpkDebugLog() += buf;
         
-        // MSZip: compSize INCLUDES 6-byte header, so actual data = compSize - 6
+        if (compSize <= 6 || uncompSize == 0) {
+            xpkDebugLog() += "Invalid sizes, stopping\n";
+            break;
+        }
+        if (offset + compSize - 6 > size) {
+            xpkDebugLog() += "Out of bounds, stopping\n";
+            break;
+        }
+        
         size_t dataSize = compSize - 6;
         
+        // Print first 8 bytes of compressed data
+        xpkDebugLog() += "Comp data[0-7]: ";
+        for (int i = 0; i < 8; i++) {
+            snprintf(buf, sizeof(buf), "%02x ", data[offset + i]);
+            xpkDebugLog() += buf;
+        }
+        xpkDebugLog() += "\n";
+        
+        // Try raw deflate
         uint8_t* outBuf = new uint8_t[uncompSize];
         z_stream strm;
         memset(&strm, 0, sizeof(strm));
@@ -45,18 +85,37 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
         strm.next_out = outBuf;
         strm.avail_out = uncompSize;
         
-        if (inflateInit2(&strm, -MAX_WBITS) == Z_OK) {
+        int initRet = inflateInit2(&strm, -MAX_WBITS);
+        snprintf(buf, sizeof(buf), "initRet=%d\n", initRet);
+        xpkDebugLog() += buf;
+        
+        if (initRet == Z_OK) {
             int ret = inflate(&strm, Z_FINISH);
+            uLong totalOut = strm.total_out;
             inflateEnd(&strm);
-            if (ret == Z_STREAM_END) {
-                output.insert(output.end(), outBuf, outBuf + uncompSize);
+            snprintf(buf, sizeof(buf), "inflate ret=%d, totalOut=%lu\n", ret, totalOut);
+            xpkDebugLog() += buf;
+            
+            if (ret == Z_STREAM_END && totalOut > 0) {
+                output.insert(output.end(), outBuf, outBuf + totalOut);
+                xpkDebugLog() += "SUCCESS!\n";
             }
         }
         delete[] outBuf;
         
-        // Move to next CK block
-        offset += dataSize;
+        // Advance to next block
+        offset = ckPos + compSize;
+        blockNum++;
+        
+        if (blockNum > 10) {
+            xpkDebugLog() += "Stopping after 10 blocks\n";
+            break;
+        }
     }
+    
+    snprintf(buf, sizeof(buf), "\nTotal decompressed: %lu bytes\n", (unsigned long)output.size());
+    xpkDebugLog() += buf;
+    
     return output;
 }
 
@@ -77,7 +136,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
         token.wordValue = 0;
         
         switch (tokenType) {
-            case 1: { // TOKEN_NAME
+            case 1: {
                 uint32_t len = readU32(data, offset);
                 offset += 4;
                 if (offset + len > size) { offset = size; break; }
@@ -85,7 +144,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 offset += len;
                 break;
             }
-            case 2: { // TOKEN_STRING
+            case 2: {
                 uint32_t len = readU32(data, offset);
                 offset += 4;
                 if (offset + len > size) { offset = size; break; }
