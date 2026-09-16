@@ -77,7 +77,7 @@
     [dbg appendFormat:@"DDS %@: %lu bytes\n", name, (unsigned long)ddsData.length];
     
     if (ddsData.length < 128) {
-        [dbg appendString:@"  Too small (<128)\n"];
+        [dbg appendString:@"  Too small\n"];
         return nil;
     }
     
@@ -99,21 +99,16 @@
     uint32_t bMask = *(uint32_t *)(bytes + 100);
     uint32_t aMask = *(uint32_t *)(bytes + 104);
     
-    [dbg appendFormat:@"  %ux%u mips=%u pfFlags=0x%x\n", width, height, mipCount, pfFlags];
-    [dbg appendFormat:@"  fourCC=0x%x bitCount=%u\n", fourCC, rgbBitCount];
+    [dbg appendFormat:@"  %ux%u mips=%u fourCC=0x%x bits=%u\n", width, height, mipCount, fourCC, rgbBitCount];
     [dbg appendFormat:@"  R=%x G=%x B=%x A=%x\n", rMask, gMask, bMask, aMask];
     
     if (fourCC != 0) {
-        char c0 = fourCC & 0xFF;
-        char c1 = (fourCC >> 8) & 0xFF;
-        char c2 = (fourCC >> 16) & 0xFF;
-        char c3 = (fourCC >> 24) & 0xFF;
-        [dbg appendFormat:@"  COMPRESSED: %c%c%c%c — NOT SUPPORTED\n", c0, c1, c2, c3];
+        [dbg appendString:@"  COMPRESSED (DXT) — skipping\n"];
         return nil;
     }
     
     if (width == 0 || height == 0 || width > 4096 || height > 4096) {
-        [dbg appendString:@"  Bad dimensions\n"];
+        [dbg appendString:@"  Bad dims\n"];
         return nil;
     }
     
@@ -121,24 +116,19 @@
     texDesc.usage = MTLTextureUsageShaderRead;
     id<MTLTexture> tex = [_device newTextureWithDescriptor:texDesc];
     if (!tex) {
-        [dbg appendString:@"  MTLTexture creation failed\n"];
+        [dbg appendString:@"  MTLTexture fail\n"];
         return nil;
     }
     
-    size_t headerSize = 128;
-    if (fourCC == 0x30315844) headerSize = 148;
-    
-    const uint8_t *pixelData = bytes + headerSize;
+    const uint8_t *pixelData = bytes + 128;
     
     [dbg appendString:@"  px[0..11]: "];
-    for (int i = 0; i < 12; i++) {
-        [dbg appendFormat:@"%02x ", pixelData[i]];
-    }
+    for (int i = 0; i < 12; i++) [dbg appendFormat:@"%02x ", pixelData[i]];
     [dbg appendString:@"\n"];
     
     if (rgbBitCount == 32) {
         [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:pixelData bytesPerRow:width * 4];
-        [dbg appendString:@"  ✓ 32-bit loaded\n"];
+        [dbg appendString:@"  ✓ 32-bit\n"];
     } else if (rgbBitCount == 24) {
         size_t pixelCount = width * height;
         uint8_t *rgba = new uint8_t[pixelCount * 4];
@@ -150,25 +140,55 @@
         }
         [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
         delete[] rgba;
-        [dbg appendString:@"  ✓ 24-bit loaded\n"];
+        [dbg appendString:@"  ✓ 24-bit\n"];
     } else if (rgbBitCount == 16) {
+        // 16-bit: use masks to determine channel positions
+        // Common: 5-6-5 (R5G6B5) or 4-4-4-4 (ARGB4444) or 1-5-5-5 (A1R5G5B5)
+        int rShift = 0, gShift = 0, bShift = 0, aShift = 0;
+        int rBits = 0, gBits = 0, bBits = 0, aBits = 0;
+        
+        // Find lowest set bit = shift, count set bits = bit count
+        auto calcShift = [](uint32_t mask) -> int {
+            if (mask == 0) return 0;
+            int shift = 0;
+            while ((mask & 1) == 0) { mask >>= 1; shift++; }
+            return shift;
+        };
+        auto calcBits = [](uint32_t mask) -> int {
+            int bits = 0;
+            while (mask) { bits += (mask & 1); mask >>= 1; }
+            return bits;
+        };
+        
+        rShift = calcShift(rMask); rBits = calcBits(rMask);
+        gShift = calcShift(gMask); gBits = calcBits(gMask);
+        bShift = calcShift(bMask); bBits = calcBits(bMask);
+        aShift = calcShift(aMask); aBits = calcBits(aMask);
+        
+        [dbg appendFormat:@"  shifts R=%d G=%d B=%d A=%d bits R=%d G=%d B=%d A=%d\n",
+         rShift, gShift, bShift, aShift, rBits, gBits, bBits, aBits];
+        
         size_t pixelCount = width * height;
         uint8_t *rgba = new uint8_t[pixelCount * 4];
         for (size_t i = 0; i < pixelCount; i++) {
             uint16_t px = pixelData[i*2] | (pixelData[i*2+1] << 8);
-            uint8_t r = ((px >> 11) & 0x1F) << 3;
-            uint8_t g = ((px >> 5) & 0x3F) << 2;
-            uint8_t b = (px & 0x1F) << 3;
+            
+            uint8_t r = 0, g = 0, b = 0, a = 255;
+            if (rBits > 0) { uint32_t v = (px >> rShift) & ((1 << rBits) - 1); r = (v * 255) / ((1 << rBits) - 1); }
+            if (gBits > 0) { uint32_t v = (px >> gShift) & ((1 << gBits) - 1); g = (v * 255) / ((1 << gBits) - 1); }
+            if (bBits > 0) { uint32_t v = (px >> bShift) & ((1 << bBits) - 1); b = (v * 255) / ((1 << bBits) - 1); }
+            if (aBits > 0) { uint32_t v = (px >> aShift) & ((1 << aBits) - 1); a = (v * 255) / ((1 << aBits) - 1); }
+            
             rgba[i*4+0] = b;
             rgba[i*4+1] = g;
             rgba[i*4+2] = r;
-            rgba[i*4+3] = 255;
+            rgba[i*4+3] = a;
         }
         [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
         delete[] rgba;
-        [dbg appendString:@"  ✓ 16-bit loaded\n"];
+        [dbg appendString:@"  ✓ 16-bit (with masks)\n"];
     } else {
-        [dbg appendFormat:@"  Unsupported bitCount=%u\n", rgbBitCount];
+        [dbg appendFormat:@"  Unsupported bits=%u\n", rgbBitCount];
         return nil;
     }
     
