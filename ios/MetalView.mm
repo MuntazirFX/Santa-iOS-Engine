@@ -65,7 +65,7 @@
     return self;
 }
 
-#pragma mark - DDS Loader with detailed debug
+#pragma mark - DDS Loader
 
 - (id<MTLTexture>)loadDDSTextureNamed:(NSString *)name debugOut:(NSMutableString *)dbg {
     NSData *ddsData = [GameEngine loadAssetNamed:name];
@@ -83,17 +83,14 @@
     
     const uint8_t *bytes = (const uint8_t *)ddsData.bytes;
     
-    // Magic
     if (bytes[0] != 'D' || bytes[1] != 'D' || bytes[2] != 'S' || bytes[3] != ' ') {
         [dbg appendString:@"  Bad magic\n"];
         return nil;
     }
     
-    uint32_t flags = *(uint32_t *)(bytes + 8);
     uint32_t height = *(uint32_t *)(bytes + 12);
     uint32_t width = *(uint32_t *)(bytes + 16);
     uint32_t mipCount = *(uint32_t *)(bytes + 28);
-    uint32_t pfSize = *(uint32_t *)(bytes + 76);
     uint32_t pfFlags = *(uint32_t *)(bytes + 80);
     uint32_t fourCC = *(uint32_t *)(bytes + 84);
     uint32_t rgbBitCount = *(uint32_t *)(bytes + 88);
@@ -128,13 +125,11 @@
         return nil;
     }
     
-    // Determine header size (128 or 148 for DX10)
     size_t headerSize = 128;
     if (fourCC == 0x30315844) headerSize = 148;
     
     const uint8_t *pixelData = bytes + headerSize;
     
-    // Print first 12 bytes of pixel data
     [dbg appendString:@"  px[0..11]: "];
     for (int i = 0; i < 12; i++) {
         [dbg appendFormat:@"%02x ", pixelData[i]];
@@ -265,7 +260,6 @@
     _indexBuffer = [_device newBufferWithBytes:faces length:mesh.faceCount*3*sizeof(uint32_t) options:MTLResourceStorageModeShared];
     _indexCount = mesh.faceCount * 3;
     
-    // ===== Texture loading =====
     NSMutableString *dbg = [NSMutableString string];
     _texture = nil;
     
@@ -276,11 +270,9 @@
     }
     [dbg appendFormat:@"basename: %@\n", basename];
     
-    // Try DDS first
     NSString *ddsPath = [NSString stringWithFormat:@"maps\\%@.dds", basename];
     _texture = [self loadDDSTextureNamed:ddsPath debugOut:dbg];
     
-    // Fallback to TGA
     if (!_texture) {
         NSString *tgaPath = [NSString stringWithFormat:@"maps\\%@.tga", basename];
         [dbg appendFormat:@"Trying TGA: %@\n", tgaPath];
@@ -293,7 +285,6 @@
         _texture = [self whiteTexture];
     }
     
-    // Store debug info for screen
     self.textureDebugInfo = dbg;
     NSLog(@"[Texture] %@", dbg);
 }
