@@ -25,10 +25,10 @@
     NSMutableString *log = [NSMutableString string];
     
     // Try @171669 (704 verts, 869 faces) — likely a big model
-    MeshData *mesh = [GameEngine extractMeshAtOffset:171669];
+    MeshData *mesh = [GameEngine extractMeshAtOffset:960968];
     
     if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
-        [log appendFormat:@"Model @171669\n"];
+        [log appendFormat:@"Model @960968\n"];
         [log appendFormat:@"%d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
         [log appendFormat:@"Tex: %@\n\n", mesh.textureName ?: @"(none)"];
         [mv setMeshToRender:mesh];
