@@ -16,4 +16,5 @@
 + (MeshData *)extractFirstMeshAtOffset:(NSUInteger)offset;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
 + (NSString *)scanXPKForDDS;
++ (NSData *)loadDDSAtOffset:(NSUInteger)offset;
 @end
