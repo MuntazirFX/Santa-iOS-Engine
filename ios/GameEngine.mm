@@ -45,35 +45,56 @@
     
     const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
     std::vector<uint8_t> data = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
-    
     if (data.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(data.data(), data.size(), 2000);
-    NSLog(@"[Mesh] Total tokens: %lu", (unsigned long)tokens.size());
     
     for (size_t i = 0; i < tokens.size(); i++) {
         if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
             size_t j = i + 1;
-            if (j < tokens.size() && tokens[j].type == 10) j++; // {
-            
-            if (j < tokens.size() && tokens[j].type == 6) j++; // ILIST (material)
+            if (j < tokens.size() && tokens[j].type == 10) j++;
+            if (j < tokens.size() && tokens[j].type == 6) j++;
             
             if (j < tokens.size() && tokens[j].type == 7) {
                 const auto& verts = tokens[j].floatList;
+                if (verts.size() < 3) continue;
                 
-                if (verts.size() >= 3) {
-                    MeshData *mesh = [[MeshData alloc] init];
-                    mesh.vertexCount = (int)(verts.size() / 3);
-                    mesh.vertices = [NSMutableData dataWithBytes:verts.data() length:verts.size() * 4];
-                    
-                    j++;
-                    if (j < tokens.size() && tokens[j].type == 6) {
-                        const auto& faces = tokens[j].intList;
-                        mesh.faceCount = (int)(faces.size() / 3);
-                        mesh.indices = [NSMutableData dataWithBytes:faces.data() length:faces.size() * 4];
-                    }
-                    return mesh;
+                MeshData *mesh = [[MeshData alloc] init];
+                mesh.vertexCount = (int)(verts.size() / 3);
+                mesh.vertices = [NSMutableData dataWithBytes:verts.data() length:verts.size() * 4];
+                
+                j++;
+                if (j < tokens.size() && tokens[j].type == 6) {
+                    const auto& faces = tokens[j].intList;
+                    mesh.faceCount = (int)(faces.size() / 3);
+                    mesh.indices = [NSMutableData dataWithBytes:faces.data() length:faces.size() * 4];
                 }
+                
+                // Look for MeshTextureCoords in next 40 tokens
+                for (size_t k = i + 5; k < tokens.size() && k < i + 40; k++) {
+                    if (tokens[k].type == 1 && tokens[k].name == "MeshTextureCoords") {
+                        size_t m = k + 1;
+                        if (m < tokens.size() && tokens[m].type == 10) m++;
+                        if (m < tokens.size() && tokens[m].type == 6) m++;
+                        if (m < tokens.size() && tokens[m].type == 7) {
+                            const auto& uvs = tokens[m].floatList;
+                            mesh.uvs = [NSMutableData dataWithBytes:uvs.data() length:uvs.size() * 4];
+                        }
+                        break;
+                    }
+                }
+                
+                // Look for TextureFilename
+                for (size_t k = i + 5; k < tokens.size() && k < i + 100; k++) {
+                    if (tokens[k].type == 1 && tokens[k].name == "TextureFilename") {
+                        if (k + 2 < tokens.size() && tokens[k+2].type == 2) {
+                            mesh.textureName = [NSString stringWithUTF8String:tokens[k+2].name.c_str()];
+                        }
+                        break;
+                    }
+                }
+                
+                return mesh;
             }
         }
     }
