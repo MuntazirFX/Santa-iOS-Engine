@@ -13,8 +13,6 @@
 + (NSString *)startEngine;
 + (NSData *)loadAssetNamed:(NSString *)name;
 + (NSString *)parseXFileAtOffset:(NSUInteger)offset maxTokens:(int)maxTokens;
-+ (MeshData *)extractFirstMeshAtOffset:(NSUInteger)offset;
++ (MeshData *)extractMeshFromAssetNamed:(NSString *)assetName;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
-+ (NSString *)scanXPKForDDS;
-+ (NSData *)loadDDSAtOffset:(NSUInteger)offset;
 @end
