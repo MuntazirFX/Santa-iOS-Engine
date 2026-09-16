@@ -260,4 +260,125 @@ static bool containsHint(const std::string& lowerStr) {
     return nil;
 }
 
++ (MeshData *)extractAllMeshesAtOffset:(NSUInteger)offset {
+    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
+    if (!xpkData || offset >= xpkData.length) return nil;
+    
+    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
+    std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
+    if (decompressed.size() < 16) return nil;
+    
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 8000);
+    
+    // Collect all meshes
+    std::vector<float> allVertices;
+    std::vector<float> allUVs;
+    std::vector<uint32_t> allIndices;
+    std::string foundTexture = "";
+    int meshCount = 0;
+    
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
+            size_t j = i + 1;
+            if (j < tokens.size() && tokens[j].type == 10) j++;
+            if (j < tokens.size() && tokens[j].type == 6) j++;
+            
+            if (j >= tokens.size() || tokens[j].type != 7) continue;
+            const auto& verts = tokens[j].floatList;
+            if (verts.size() < 9) continue;
+            
+            int baseVertex = (int)(allVertices.size() / 3);
+            allVertices.insert(allVertices.end(), verts.begin(), verts.end());
+            
+            j++;
+            
+            if (j < tokens.size() && tokens[j].type == 6) {
+                const auto& raw = tokens[j].intList;
+                size_t p = 0;
+                
+                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
+                    while (p < raw.size()) {
+                        uint32_t cnt = raw[p++];
+                        if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
+                        for (uint32_t k = 1; k + 1 < cnt; k++) {
+                            allIndices.push_back((uint32_t)raw[p] + baseVertex);
+                            allIndices.push_back((uint32_t)raw[p + k] + baseVertex);
+                            allIndices.push_back((uint32_t)raw[p + k + 1] + baseVertex);
+                        }
+                        p += cnt;
+                    }
+                } else {
+                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
+                        allIndices.push_back((uint32_t)raw[k] + baseVertex);
+                        allIndices.push_back((uint32_t)raw[k+1] + baseVertex);
+                        allIndices.push_back((uint32_t)raw[k+2] + baseVertex);
+                    }
+                }
+            }
+            
+            // UVs for this mesh
+            const std::vector<float> *uvForThis = nullptr;
+            for (size_t k = j; k < tokens.size() && k < j + 30; k++) {
+                if (tokens[k].type == 1 && tokens[k].name == "MeshTextureCoords") {
+                    size_t m = k + 1;
+                    if (m < tokens.size() && tokens[m].type == 10) m++;
+                    if (m < tokens.size() && tokens[m].type == 6) m++;
+                    if (m < tokens.size() && tokens[m].type == 7) {
+                        if (tokens[m].floatList.size() >= verts.size() / 3 * 2) {
+                            uvForThis = &tokens[m].floatList;
+                        }
+                    }
+                    break;
+                }
+                if (tokens[k].type == 1 && tokens[k].name == "Mesh") break;
+            }
+            
+            if (uvForThis) {
+                allUVs.insert(allUVs.end(), uvForThis->begin(), uvForThis->end());
+            } else {
+                // Pad with zeros
+                for (size_t v = 0; v < verts.size() / 3; v++) {
+                    allUVs.push_back(0.5f);
+                    allUVs.push_back(0.5f);
+                }
+            }
+            
+            meshCount++;
+            NSLog(@"[Santa] Mesh %d: %d v (total: %d v, %d idx)",
+                  meshCount, (int)(verts.size()/3), (int)(allVertices.size()/3), (int)allIndices.size());
+        }
+        
+        // Find any TextureFilename in whole file
+        if (tokens[i].type == 1 && tokens[i].name == "TextureFilename" && foundTexture.empty()) {
+            for (size_t k = i + 1; k < tokens.size() && k < i + 5; k++) {
+                if (tokens[k].type == 2 && !tokens[k].name.empty()) {
+                    foundTexture = tokens[k].name;
+                    break;
+                }
+            }
+        }
+    }
+    
+    if (allVertices.empty()) return nil;
+    
+    MeshData *mesh = [[MeshData alloc] init];
+    mesh.vertexCount = (int)(allVertices.size() / 3);
+    mesh.vertices = [NSMutableData dataWithBytes:allVertices.data() length:allVertices.size() * 4];
+    
+    mesh.faceCount = (int)(allIndices.size() / 3);
+    mesh.indices = [NSMutableData dataWithBytes:allIndices.data() length:allIndices.size() * sizeof(uint32_t)];
+    
+    mesh.uvs = [NSMutableData dataWithBytes:allUVs.data() length:allUVs.size() * 4];
+    
+    if (!foundTexture.empty()) {
+        mesh.textureName = [NSString stringWithUTF8String:foundTexture.c_str()];
+    }
+    
+    NSLog(@"[Santa] Total: %d meshes, %d v, %d f, tex=%@",
+          meshCount, mesh.vertexCount, mesh.faceCount, mesh.textureName ?: @"(none)");
+    
+    return mesh;
+}
+
 @end
