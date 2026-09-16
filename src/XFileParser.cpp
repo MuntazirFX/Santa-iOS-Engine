@@ -21,99 +21,108 @@ static uint16_t readU16(const uint8_t* data, size_t offset) {
 std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t size) {
     xpkDebugLog().clear();
     std::vector<uint8_t> output;
-    if (size < 30) {
-        xpkDebugLog() += "Size too small\n";
-        return output;
-    }
+    if (size < 30) return output;
     
     char buf[512];
-    snprintf(buf, sizeof(buf), "Total size: %zu bytes\n", size);
+    
+    // CK block at offset 24
+    size_t ckPos = 24;
+    if (data[ckPos] != 0x43 || data[ckPos+1] != 0x4B) {
+        // Scan for CK
+        for (size_t i = 16; i < 64 && i + 1 < size; i++) {
+            if (data[i] == 0x43 && data[i+1] == 0x4B) { ckPos = i; break; }
+        }
+    }
+    
+    uint16_t compSize = readU16(data, ckPos+2);
+    uint16_t uncompSize = readU16(data, ckPos+4);
+    
+    snprintf(buf, sizeof(buf), "CK at %zu, comp=%u, uncomp=%u\n", ckPos, compSize, uncompSize);
     xpkDebugLog() += buf;
     
-    // Print first 32 bytes
-    xpkDebugLog() += "First 32 bytes: ";
-    for (int i = 0; i < 32; i++) {
-        snprintf(buf, sizeof(buf), "%02x ", data[i]);
-        xpkDebugLog() += buf;
-    }
-    xpkDebugLog() += "\n";
+    // Try multiple start offsets and window bits
+    struct Attempt { int startOffset; int windowBits; const char* name; };
+    Attempt attempts[] = {
+        {6, -15, "CK+6, raw deflate"},
+        {6, 15, "CK+6, zlib"},
+        {6, -9, "CK+6, raw 9-bit"},
+        {4, -15, "CK+4, raw"},
+        {8, -15, "CK+8, raw"},
+        {10, -15, "CK+10, raw"},
+        {2, -15, "CK+2, raw"},
+        {6, 31, "CK+6, gzip"},
+    };
     
-    size_t offset = 16;
-    int blockNum = 0;
-    
-    while (offset + 6 <= size) {
-        // Scan for CK
-        while (offset + 1 < size && !(data[offset] == 0x43 && data[offset+1] == 0x4B)) {
-            offset++;
-        }
-        if (offset + 6 > size) break;
+    for (auto& att : attempts) {
+        size_t startOffset = ckPos + att.startOffset;
+        if (startOffset >= size) continue;
         
-        size_t ckPos = offset;
-        offset += 2;
-        uint16_t compSize = readU16(data, offset); offset += 2;
-        uint16_t uncompSize = readU16(data, offset); offset += 2;
+        // Print first 4 bytes at this offset
+        xpkDebugLog() += "\n--- Trying: ";
+        xpkDebugLog() += att.name;
+        xpkDebugLog() += " ---\n";
         
-        snprintf(buf, sizeof(buf), "\nBlock %d: CK at %zu, comp=%u, uncomp=%u\n",
-                 blockNum, ckPos, compSize, uncompSize);
+        snprintf(buf, sizeof(buf), "Start bytes: %02x %02x %02x %02x\n",
+                 data[startOffset], data[startOffset+1], data[startOffset+2], data[startOffset+3]);
         xpkDebugLog() += buf;
         
-        if (compSize <= 6 || uncompSize == 0) {
-            xpkDebugLog() += "Invalid sizes, stopping\n";
-            break;
-        }
-        if (offset + compSize - 6 > size) {
-            xpkDebugLog() += "Out of bounds, stopping\n";
-            break;
-        }
-        
-        size_t dataSize = compSize - 6;
-        
-        // Print first 8 bytes of compressed data
-        xpkDebugLog() += "Comp data[0-7]: ";
-        for (int i = 0; i < 8; i++) {
-            snprintf(buf, sizeof(buf), "%02x ", data[offset + i]);
-            xpkDebugLog() += buf;
-        }
-        xpkDebugLog() += "\n";
-        
-        // Try raw deflate
+        // Try decompression
+        std::vector<uint8_t> tryOutput;
         uint8_t* outBuf = new uint8_t[uncompSize];
         z_stream strm;
         memset(&strm, 0, sizeof(strm));
-        strm.next_in = (Bytef*)(data + offset);
-        strm.avail_in = (uInt)dataSize;
+        strm.next_in = (Bytef*)(data + startOffset);
+        strm.avail_in = (uInt)(size - startOffset);
         strm.next_out = outBuf;
         strm.avail_out = uncompSize;
         
-        int initRet = inflateInit2(&strm, -MAX_WBITS);
-        snprintf(buf, sizeof(buf), "initRet=%d\n", initRet);
+        int initRet = inflateInit2(&strm, att.windowBits);
+        if (initRet != Z_OK) {
+            snprintf(buf, sizeof(buf), "initRet=%d (skip)\n", initRet);
+            xpkDebugLog() += buf;
+            delete[] outBuf;
+            continue;
+        }
+        
+        int ret = inflate(&strm, Z_FINISH);
+        uLong totalOut = strm.total_out;
+        uLong availIn = strm.avail_in;
+        inflateEnd(&strm);
+        
+        snprintf(buf, sizeof(buf), "ret=%d, totalOut=%lu, remaining_in=%lu\n", ret, totalOut, availIn);
         xpkDebugLog() += buf;
         
-        if (initRet == Z_OK) {
-            int ret = inflate(&strm, Z_FINISH);
-            uLong totalOut = strm.total_out;
-            inflateEnd(&strm);
-            snprintf(buf, sizeof(buf), "inflate ret=%d, totalOut=%lu\n", ret, totalOut);
-            xpkDebugLog() += buf;
+        if (ret == Z_STREAM_END && totalOut > 0) {
+            tryOutput.insert(tryOutput.end(), outBuf, outBuf + totalOut);
+            xpkDebugLog() += "✓ SUCCESS!\n";
             
-            if (ret == Z_STREAM_END && totalOut > 0) {
-                output.insert(output.end(), outBuf, outBuf + totalOut);
-                xpkDebugLog() += "SUCCESS!\n";
+            // Print first 16 bytes of output
+            xpkDebugLog() += "Output: ";
+            for (int i = 0; i < 16 && i < (int)tryOutput.size(); i++) {
+                snprintf(buf, sizeof(buf), "%02x ", tryOutput[i]);
+                xpkDebugLog() += buf;
             }
-        }
-        delete[] outBuf;
-        
-        // Advance to next block
-        offset = ckPos + compSize;
-        blockNum++;
-        
-        if (blockNum > 10) {
-            xpkDebugLog() += "Stopping after 10 blocks\n";
+            xpkDebugLog() += "\n";
+            
+            delete[] outBuf;
+            output = tryOutput;
             break;
         }
+        
+        // Even on failure, show what we got
+        if (totalOut > 0) {
+            xpkDebugLog() += "Partial: ";
+            for (int i = 0; i < 16 && i < (int)totalOut; i++) {
+                snprintf(buf, sizeof(buf), "%02x ", outBuf[i]);
+                xpkDebugLog() += buf;
+            }
+            xpkDebugLog() += "\n";
+        }
+        
+        delete[] outBuf;
     }
     
-    snprintf(buf, sizeof(buf), "\nTotal decompressed: %lu bytes\n", (unsigned long)output.size());
+    snprintf(buf, sizeof(buf), "\nFinal decompressed: %lu bytes\n", (unsigned long)output.size());
     xpkDebugLog() += buf;
     
     return output;
