@@ -18,4 +18,5 @@ class XFileParser {
 public:
     static std::vector<XToken> parseTokens(const uint8_t* data, size_t size, int maxTokens);
     static std::string describeToken(const XToken& token);
+    static std::vector<uint8_t> decompressMSZip(const uint8_t* data, size_t size);
 };
