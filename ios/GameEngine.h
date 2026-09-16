@@ -2,5 +2,5 @@
 
 @interface GameEngine : NSObject
 + (NSString *)startEngine;
-+ (NSData *)loadTGATextureData;
++ (NSData *)loadAssetNamed:(NSString *)name;
 @end
