@@ -34,8 +34,8 @@
     std::ifstream file([resourcePath UTF8String], std::ios::binary);
     if (!file.is_open()) return nil;
     
-    // Known TGA offset (64x64, 32 BPP) jo humne pehle dhoonda tha
-    uint32_t tgaOffset = 5642606;
+// 256x256 wala texture try karein (zyada rangeen ho sakta hai)
+    uint32_t tgaOffset = 6205594;
     
     file.seekg(tgaOffset, std::ios::beg);
     unsigned char header[18];
