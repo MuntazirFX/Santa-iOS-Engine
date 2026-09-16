@@ -6,14 +6,13 @@
 @property (strong, nonatomic) NSMutableData *vertices;
 @property (strong, nonatomic) NSMutableData *indices;
 @property (strong, nonatomic) NSMutableData *uvs;
+@property (nonatomic) NSUInteger offset;
 @property (strong, nonatomic) NSString *textureName;
 @end
 
 @interface GameEngine : NSObject
 + (NSString *)startEngine;
-+ (NSData *)loadAssetNamed:(NSString *)name;
-+ (MeshData *)extractMeshFromAssetNamed:(NSString *)assetName;
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
-+ (NSString *)scanXPKForXFiles;
++ (NSString *)findAllMeshes;
 @end
