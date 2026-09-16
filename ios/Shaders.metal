@@ -1,7 +1,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// ============ Textured 3D Mesh ============
 struct MeshVertexOut {
     float4 position [[position]];
     float2 uv;
@@ -14,7 +13,6 @@ vertex MeshVertexOut mesh_vertex(const device float *data [[buffer(0)]],
     uint base = vid * 5;
     float3 pos = float3(data[base], data[base+1], data[base+2]);
     
-    // Rotate around Y axis
     float c = cos(angle);
     float s = sin(angle);
     float3 r;
