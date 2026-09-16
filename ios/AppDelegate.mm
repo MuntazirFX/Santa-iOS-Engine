@@ -14,10 +14,11 @@
     metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [viewController.view addSubview:metalView];
     
-    UITextView *logView = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, viewController.view.bounds.size.width, 90)];
-    logView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.6];
+    // Debug output overlay
+    UITextView *logView = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, viewController.view.bounds.size.width, 280)];
+    logView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.75];
     logView.textColor = [UIColor greenColor];
-    logView.font = [UIFont fontWithName:@"Courier" size:10];
+    logView.font = [UIFont fontWithName:@"Courier" size:9];
     logView.editable = NO;
     logView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [viewController.view addSubview:logView];
@@ -26,10 +27,9 @@
     
     MeshData *mesh = [GameEngine extractFirstMeshAtOffset:21047];
     if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
-        [log appendFormat:@"Mesh: %d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
-        [log appendFormat:@"UVs: %@\n", mesh.uvs ? @"yes" : @"no"];
-        [log appendFormat:@"Tex: haus2.dds (from XPK)\n"];
+        [log appendFormat:@"Mesh: %d verts, %d faces\n\n", mesh.vertexCount, mesh.faceCount];
         [metalView setMeshToRender:mesh];
+        [log appendString:metalView.textureDebugInfo];
     } else {
         [log appendString:@"Mesh extraction failed\n"];
     }
