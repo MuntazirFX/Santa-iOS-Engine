@@ -181,5 +181,44 @@
     }
     return nil;
 }
++ (NSString *)scanXPKForDDS {
+    NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    NSData *xpkData = [NSData dataWithContentsOfFile:resourcePath];
+    if (!xpkData) return @"No XPK data";
+    
+    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
+    size_t totalSize = xpkData.length;
+    
+    NSMutableString *out = [NSMutableString string];
+    [out appendFormat:@"XPK size: %lu bytes\n\n", (unsigned long)totalSize];
+    
+    int found = 0;
+    for (size_t i = 0; i < totalSize - 128; i++) {
+        // Check for "DDS " magic (0x44 0x44 0x53 0x20)
+        if (bytes[i] == 0x44 && bytes[i+1] == 0x44 && bytes[i+2] == 0x53 && bytes[i+3] == 0x20) {
+            
+            // Read DDS header at this offset
+            uint32_t height = *(uint32_t *)(bytes + i + 12);
+            uint32_t width = *(uint32_t *)(bytes + i + 16);
+            uint32_t fourCC = *(uint32_t *)(bytes + i + 84);
+            uint32_t bitCount = *(uint32_t *)(bytes + i + 88);
+            
+            // Sanity check
+            if (width > 0 && width <= 4096 && height > 0 && height <= 4096) {
+                [out appendFormat:@"@%zu: %ux%u fourCC=0x%x bitCount=%u\n",
+                 i, width, height, fourCC, bitCount];
+                found++;
+                if (found >= 15) break;
+            }
+        }
+    }
+    
+    if (found == 0) {
+        [out appendString:@"No valid DDS signatures found!\n"];
+    } else {
+        [out appendFormat:@"\nTotal: %d DDS files found\n", found];
+    }
+    return out;
+}
 
 @end
