@@ -63,8 +63,8 @@
         return;
     }
     
-    uint16_t width = 64;
-    uint16_t height = 64;
+    uint16_t width = 256;
+    uint16_t height = 256;
     
     MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
     texDesc.usage = MTLTextureUsageShaderRead;
