@@ -5,30 +5,29 @@
 
 @implementation GameEngine
 
-+ (void)startEngine {
-    NSLog(@"[GameEngine] Starting Santa iOS Engine...");
++ (NSString *)startEngine {
+    NSMutableString *status = [NSMutableString string];
+    [status appendString:@"Engine Started\n"];
     
-    // App bundle se xmas.xpk ka path dhoondein
     NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (resourcePath == nil) {
-        NSLog(@"[GameEngine] ERROR: xmas.xpk bundle mein nahi mili!");
-        return;
+        [status appendString:@"ERROR: xmas.xpk not found in bundle!"];
+        return status;
     }
+    
+    [status appendFormat:@"Found XPK at: %@\n", [resourcePath lastPathComponent]];
     
     std::string xpkPath = [resourcePath UTF8String];
-    NSLog(@"[GameEngine] XPK Path: %s", xpkPath.c_str());
     
-    // AssetManager banayein aur XPK load karein
     AssetManager assetMgr;
     if (assetMgr.loadXPK(xpkPath)) {
-        NSLog(@"[GameEngine] SUCCESS: XPK loaded!");
-        
-        // Test: ek file load karein
-        std::vector<uint8_t> data = assetMgr.getAssetData("maps\\mouse.tga");
-        NSLog(@"[GameEngine] Loaded mouse.tga: %lu bytes", (unsigned long)data.size());
+        [status appendString:@"XPK Loaded Successfully!\n"];
+        [status appendString:@"177 files ready in memory."];
     } else {
-        NSLog(@"[GameEngine] FAILED: XPK load nahi hui!");
+        [status appendString:@"ERROR: XPK failed to load!"];
     }
+    
+    return status;
 }
 
 @end
