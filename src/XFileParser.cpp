@@ -17,7 +17,7 @@ static uint16_t readU16(const uint8_t* data, size_t offset) {
     return data[offset] | (data[offset+1] << 8);
 }
 
-// MSZip / bzip decompression — CK+2 start, raw deflate
+// bzip decompression: deflate stream starts at CK+2 (compSize field position)
 std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t size) {
     xpkDebugLog().clear();
     std::vector<uint8_t> output;
@@ -27,25 +27,23 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
     size_t offset = 0;
     int blockNum = 0;
     
-    while (offset + 6 <= size && blockNum < 20) {
-        // Scan for CK
+    while (offset + 8 <= size && blockNum < 100) {
+        // Find CK marker
         while (offset + 1 < size && !(data[offset] == 0x43 && data[offset+1] == 0x4B)) {
             offset++;
         }
-        if (offset + 6 > size) break;
+        if (offset + 8 > size) break;
         
         size_t ckPos = offset;
+        size_t startOffset = ckPos + 2;  // Deflate starts at CK+2
         
-        // Try decompression starting at CK+2 (data starts at compSize field)
-        size_t startOffset = ckPos + 2;
-        if (startOffset >= size) break;
-        
-        // Read uncompSize (for buffer size)
         uint16_t uncompSize = readU16(data, ckPos + 4);
-        if (uncompSize == 0 || uncompSize > 100000) {
-            snprintf(buf, sizeof(buf), "Block %d: invalid uncompSize %u\n", blockNum, uncompSize);
+        if (uncompSize == 0 || uncompSize > 60000) {
+            snprintf(buf, sizeof(buf), "Block %d: CK=%zu, bad uncomp=%u, skip\n",
+                     blockNum, ckPos, uncompSize);
             xpkDebugLog() += buf;
-            offset = ckPos + 6;
+            offset = ckPos + 2;
+            blockNum++;
             continue;
         }
         
@@ -60,10 +58,11 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
         if (inflateInit2(&strm, -MAX_WBITS) == Z_OK) {
             int ret = inflate(&strm, Z_FINISH);
             uLong totalOut = strm.total_out;
+            uLong totalIn = strm.total_in;
             inflateEnd(&strm);
             
-            snprintf(buf, sizeof(buf), "Block %d: CK=%zu, uncomp=%u, ret=%d, totalOut=%lu\n",
-                     blockNum, ckPos, uncompSize, ret, totalOut);
+            snprintf(buf, sizeof(buf), "Block %d: CK=%zu, uncomp=%u, ret=%d, out=%lu, in=%lu\n",
+                     blockNum, ckPos, uncompSize, ret, totalOut, totalIn);
             xpkDebugLog() += buf;
             
             if (totalOut > 0) {
@@ -71,17 +70,15 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
             }
             delete[] outBuf;
             
-            if (ret == Z_STREAM_END) {
-                // Find next CK block
-                offset = ckPos + 6 + totalOut;
-                blockNum++;
-                continue;
-            }
+            // Move past this deflate stream
+            offset = startOffset + totalIn;
+            blockNum++;
+            continue;
         } else {
             delete[] outBuf;
         }
         
-        offset = ckPos + 6;
+        offset = ckPos + 2;
         blockNum++;
     }
     
@@ -92,11 +89,13 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
     return output;
 }
 
-// Token parser — starts at offset 0 (no 16-byte header in bzip)
+// Token parser with template body awareness
 std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, int maxTokens) {
     std::vector<XToken> tokens;
     if (size < 4) return tokens;
     size_t offset = 0;
+    int templateDepth = 0;
+    int braceDepth = 0;
     
     while (offset < size && (int)tokens.size() < maxTokens) {
         uint16_t tokenType = readU16(data, offset);
@@ -127,7 +126,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 break;
             }
             case 3: token.intValue = (int)readU32(data, offset); offset += 4; break;
-            case 5: offset += 16; break;
+            case 5: offset += 16; break; // GUID
             case 6: { // INTEGER_LIST
                 uint32_t count = readU32(data, offset);
                 offset += 4;
@@ -150,26 +149,47 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             }
-            case 10: case 11: case 12: case 13:
-            case 14: case 15: case 16: case 17:
-            case 18: case 19: case 20:
-            case 31:
+            case 10: braceDepth++; break; // { 
+            case 11: braceDepth--; if (braceDepth < 0) braceDepth = 0; break; // }
+            case 12: case 13: case 14: case 15:
+            case 16: case 17: case 18: case 19: case 20:
                 break;
-            case 40: token.wordValue = readU16(data, offset); offset += 2; break;
-            case 41: token.dwordValue = (int)readU32(data, offset); offset += 4; break;
-            case 42: {
-                uint32_t bits = readU32(data, offset);
-                memcpy(&token.floatValue, &bits, 4);
-                offset += 4;
+            case 31: templateDepth++; break; // TEMPLATE
+            case 40: // WORD — in template body, no value; in data, 2 bytes
+                if (templateDepth > 0) {
+                    // Template: next token is NAME, no value consumed
+                } else {
+                    token.wordValue = readU16(data, offset); offset += 2;
+                }
                 break;
-            }
-            case 43: offset += 8; break;
-            case 44: case 45: offset += 1; break;
-            case 46: offset += 2; break;
-            case 47: offset += 4; break;
+            case 41: // DWORD
+                if (templateDepth > 0) {
+                    // Template: no value consumed
+                } else {
+                    token.dwordValue = (int)readU32(data, offset); offset += 4;
+                }
+                break;
+            case 42: // FLOAT
+                if (templateDepth > 0) {
+                    // Template: no value consumed
+                } else {
+                    uint32_t bits = readU32(data, offset);
+                    memcpy(&token.floatValue, &bits, 4);
+                    offset += 4;
+                }
+                break;
+            case 43: if (templateDepth == 0) offset += 8; break;
+            case 44: case 45: if (templateDepth == 0) offset += 1; break;
+            case 46: if (templateDepth == 0) offset += 2; break;
+            case 47: if (templateDepth == 0) offset += 4; break;
             default: offset = size; break;
         }
         tokens.push_back(token);
+        
+        // Reset template depth when brace level returns to 0
+        if (braceDepth == 0 && templateDepth > 0) {
+            templateDepth = 0;
+        }
     }
     return tokens;
 }
@@ -195,9 +215,9 @@ std::string XFileParser::describeToken(const XToken& token) {
         case 19: oss << ","; break;
         case 20: oss << ";"; break;
         case 31: oss << "TEMPLATE"; break;
-        case 40: oss << "WORD: " << token.wordValue; break;
-        case 41: oss << "DWORD:" << token.dwordValue; break;
-        case 42: oss << "FLOAT:" << token.floatValue; break;
+        case 40: oss << "WORD"; break;
+        case 41: oss << "DWORD"; break;
+        case 42: oss << "FLOAT"; break;
         case 43: oss << "DOUBLE"; break;
         case 44: oss << "CHAR"; break;
         case 45: oss << "UCHAR"; break;
