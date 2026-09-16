@@ -265,8 +265,12 @@
     
     NSString *basename = @"haus2";
     if (mesh.textureName && mesh.textureName.length > 0) {
-        NSString *filename = [mesh.textureName lastPathComponent];
-        basename = [filename stringByDeletingPathExtension];
+        // Windows path fix: backslash ko forward slash mein badlein
+        NSString *ref = [mesh.textureName stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
+        NSString *filename = [ref lastPathComponent];
+        if (filename.length > 0) {
+            basename = [filename stringByDeletingPathExtension];
+        }
     }
     [dbg appendFormat:@"basename: %@\n", basename];
     
