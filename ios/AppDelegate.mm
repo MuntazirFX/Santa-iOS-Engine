@@ -1,6 +1,5 @@
 #import "AppDelegate.h"
 #import "GameEngine.h"
-#import "MetalView.h"
 
 @implementation AppDelegate
 
@@ -10,40 +9,22 @@
     UIViewController *viewController = [[UIViewController alloc] init];
     viewController.view.backgroundColor = [UIColor blackColor];
     
-    MetalView *metalView = [[MetalView alloc] initWithFrame:viewController.view.bounds];
-    metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    [viewController.view addSubview:metalView];
-    
-    UITextView *logView = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, viewController.view.bounds.size.width, 200)];
-    logView.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.75];
-    logView.textColor = [UIColor greenColor];
-    logView.font = [UIFont fontWithName:@"Courier" size:9];
-    logView.editable = NO;
-    logView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    [viewController.view addSubview:logView];
+    UITextView *textView = [[UITextView alloc] initWithFrame:viewController.view.bounds];
+    textView.backgroundColor = [UIColor blackColor];
+    textView.textColor = [UIColor greenColor];
+    textView.font = [UIFont fontWithName:@"Courier" size:10];
+    textView.editable = NO;
+    [viewController.view addSubview:textView];
     
     NSMutableString *log = [NSMutableString string];
     
-    // Santa model extract karein
-    [log appendString:@"=== Santa Model ===\n"];
-    MeshData *mesh = [GameEngine extractMeshFromAssetNamed:@"gfx\\weihnachtsman_000.x"];
+    [log appendString:@"=== X-Files in XPK ===\n\n"];
+    [log appendString:[GameEngine scanXPKForXFiles]];
+    [log appendString:@"\n"];
+    [log appendString:@"=== weihnachts files ===\n"];
+    [log appendString:[GameEngine listAssetsByKeyword:@"weihnachts"]];
     
-    if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
-        [log appendFormat:@"Santa: %d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
-        [log appendFormat:@"Tex: %@\n\n", mesh.textureName ?: @"(none)"];
-        [metalView setMeshToRender:mesh];
-        [log appendString:metalView.textureDebugInfo];
-    } else {
-        [log appendString:@"Santa extraction failed!\n\n"];
-        [log appendString:@"Trying gift model...\n"];
-        mesh = [GameEngine extractMeshFromAssetNamed:@"gfx\\geschenk_000.x"];
-        if (mesh) {
-            [log appendFormat:@"Gift: %d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
-            [metalView setMeshToRender:mesh];
-        }
-    }
-    
-    logView.text = log;
+    textView.text = log;
     
     self.window.rootViewController = viewController;
     [self.window makeKeyAndVisible];
