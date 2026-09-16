@@ -1,29 +1,33 @@
-#import "AppDelegate.h"
 #import "GameEngine.h"
+#include "AssetManager.h"
+#include <string>
+#include <vector>
 
-@implementation AppDelegate
+@implementation GameEngine
 
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
++ (NSString *)startEngine {
+    NSMutableString *status = [NSMutableString string];
+    [status appendString:@"Engine Started\n"];
     
-    UIViewController *viewController = [[UIViewController alloc] init];
-    viewController.view.backgroundColor = [UIColor colorWithRed:0.1 green:0.1 blue:0.2 alpha:1.0];
+    NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    if (resourcePath == nil) {
+        [status appendString:@"ERROR: xmas.xpk not found in bundle!"];
+        return status;
+    }
     
-    UILabel *label = [[UILabel alloc] initWithFrame:viewController.view.bounds];
-    label.text = @"Santa iOS Engine\nLoading XPK...";
-    label.numberOfLines = 0;
-    label.textColor = [UIColor whiteColor];
-    label.textAlignment = NSTextAlignmentCenter;
-    label.font = [UIFont boldSystemFontOfSize:24];
-    [viewController.view addSubview:label];
+    [status appendFormat:@"Found XPK at: %@\n", [resourcePath lastPathComponent]];
     
-    self.window.rootViewController = viewController;
-    [self.window makeKeyAndVisible];
+    std::string xpkPath = [resourcePath UTF8String];
     
-    // Engine start karein
-    [GameEngine startEngine];
+    AssetManager assetMgr;
+    if (assetMgr.loadXPK(xpkPath)) {
+        [status appendString:@"XPK Loaded Successfully!\n"];
+        [status appendString:@"177 files ready in memory."];
+    } else {
+        [status appendString:@"ERROR: XPK failed to load!"];
+    }
     
-    return YES;
+    return status;
 }
 
 @end
