@@ -34,6 +34,7 @@
         _angle = 0;
         _indexCount = 0;
         _lastDrawableSize = CGSizeZero;
+        _textureDebugInfo = @"(not loaded yet)";
         _commandQueue = [_device newCommandQueue];
         
         MTLSamplerDescriptor *sampDesc = [[MTLSamplerDescriptor alloc] init];
@@ -60,9 +61,123 @@
         
         NSError *err = nil;
         _meshPipelineState = [_device newRenderPipelineStateWithDescriptor:desc error:&err];
-        if (!_meshPipelineState) NSLog(@"[MetalView] Pipeline failed: %@", err);
     }
     return self;
+}
+
+#pragma mark - DDS Loader with detailed debug
+
+- (id<MTLTexture>)loadDDSTextureNamed:(NSString *)name debugOut:(NSMutableString *)dbg {
+    NSData *ddsData = [GameEngine loadAssetNamed:name];
+    if (!ddsData) {
+        [dbg appendFormat:@"DDS %@: NOT FOUND\n", name];
+        return nil;
+    }
+    
+    [dbg appendFormat:@"DDS %@: %lu bytes\n", name, (unsigned long)ddsData.length];
+    
+    if (ddsData.length < 128) {
+        [dbg appendString:@"  Too small (<128)\n"];
+        return nil;
+    }
+    
+    const uint8_t *bytes = (const uint8_t *)ddsData.bytes;
+    
+    // Magic
+    if (bytes[0] != 'D' || bytes[1] != 'D' || bytes[2] != 'S' || bytes[3] != ' ') {
+        [dbg appendString:@"  Bad magic\n"];
+        return nil;
+    }
+    
+    uint32_t flags = *(uint32_t *)(bytes + 8);
+    uint32_t height = *(uint32_t *)(bytes + 12);
+    uint32_t width = *(uint32_t *)(bytes + 16);
+    uint32_t mipCount = *(uint32_t *)(bytes + 28);
+    uint32_t pfSize = *(uint32_t *)(bytes + 76);
+    uint32_t pfFlags = *(uint32_t *)(bytes + 80);
+    uint32_t fourCC = *(uint32_t *)(bytes + 84);
+    uint32_t rgbBitCount = *(uint32_t *)(bytes + 88);
+    uint32_t rMask = *(uint32_t *)(bytes + 92);
+    uint32_t gMask = *(uint32_t *)(bytes + 96);
+    uint32_t bMask = *(uint32_t *)(bytes + 100);
+    uint32_t aMask = *(uint32_t *)(bytes + 104);
+    
+    [dbg appendFormat:@"  %ux%u mips=%u pfFlags=0x%x\n", width, height, mipCount, pfFlags];
+    [dbg appendFormat:@"  fourCC=0x%x bitCount=%u\n", fourCC, rgbBitCount];
+    [dbg appendFormat:@"  R=%x G=%x B=%x A=%x\n", rMask, gMask, bMask, aMask];
+    
+    if (fourCC != 0) {
+        char c0 = fourCC & 0xFF;
+        char c1 = (fourCC >> 8) & 0xFF;
+        char c2 = (fourCC >> 16) & 0xFF;
+        char c3 = (fourCC >> 24) & 0xFF;
+        [dbg appendFormat:@"  COMPRESSED: %c%c%c%c — NOT SUPPORTED\n", c0, c1, c2, c3];
+        return nil;
+    }
+    
+    if (width == 0 || height == 0 || width > 4096 || height > 4096) {
+        [dbg appendString:@"  Bad dimensions\n"];
+        return nil;
+    }
+    
+    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+    texDesc.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> tex = [_device newTextureWithDescriptor:texDesc];
+    if (!tex) {
+        [dbg appendString:@"  MTLTexture creation failed\n"];
+        return nil;
+    }
+    
+    // Determine header size (128 or 148 for DX10)
+    size_t headerSize = 128;
+    if (fourCC == 0x30315844) headerSize = 148;
+    
+    const uint8_t *pixelData = bytes + headerSize;
+    
+    // Print first 12 bytes of pixel data
+    [dbg appendString:@"  px[0..11]: "];
+    for (int i = 0; i < 12; i++) {
+        [dbg appendFormat:@"%02x ", pixelData[i]];
+    }
+    [dbg appendString:@"\n"];
+    
+    if (rgbBitCount == 32) {
+        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:pixelData bytesPerRow:width * 4];
+        [dbg appendString:@"  ✓ 32-bit loaded\n"];
+    } else if (rgbBitCount == 24) {
+        size_t pixelCount = width * height;
+        uint8_t *rgba = new uint8_t[pixelCount * 4];
+        for (size_t i = 0; i < pixelCount; i++) {
+            rgba[i*4+0] = pixelData[i*3+0];
+            rgba[i*4+1] = pixelData[i*3+1];
+            rgba[i*4+2] = pixelData[i*3+2];
+            rgba[i*4+3] = 255;
+        }
+        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
+        delete[] rgba;
+        [dbg appendString:@"  ✓ 24-bit loaded\n"];
+    } else if (rgbBitCount == 16) {
+        size_t pixelCount = width * height;
+        uint8_t *rgba = new uint8_t[pixelCount * 4];
+        for (size_t i = 0; i < pixelCount; i++) {
+            uint16_t px = pixelData[i*2] | (pixelData[i*2+1] << 8);
+            uint8_t r = ((px >> 11) & 0x1F) << 3;
+            uint8_t g = ((px >> 5) & 0x3F) << 2;
+            uint8_t b = (px & 0x1F) << 3;
+            rgba[i*4+0] = b;
+            rgba[i*4+1] = g;
+            rgba[i*4+2] = r;
+            rgba[i*4+3] = 255;
+        }
+        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
+        delete[] rgba;
+        [dbg appendString:@"  ✓ 16-bit loaded\n"];
+    } else {
+        [dbg appendFormat:@"  Unsupported bitCount=%u\n", rgbBitCount];
+        return nil;
+    }
+    
+    return tex;
 }
 
 #pragma mark - TGA Loader
@@ -77,8 +192,6 @@
     uint8_t bpp = bytes[16];
     
     if (width == 0 || height == 0 || (bpp != 24 && bpp != 32)) return nil;
-    
-    NSLog(@"[TGA] %@ (%dx%d @ %dbpp)", name, width, height, bpp);
     
     MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
     texDesc.usage = MTLTextureUsageShaderRead;
@@ -101,118 +214,6 @@
         [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:(bytes + 18) bytesPerRow:width * 4];
     }
     return tex;
-}
-
-#pragma mark - DDS Loader
-
-- (id<MTLTexture>)loadDDSTextureNamed:(NSString *)name {
-    NSData *ddsData = [GameEngine loadAssetNamed:name];
-    if (!ddsData || ddsData.length < 128) {
-        NSLog(@"[DDS] Not found or too small: %@", name);
-        return nil;
-    }
-    
-    const uint8_t *bytes = (const uint8_t *)ddsData.bytes;
-    
-    // Magic "DDS "
-    if (bytes[0] != 'D' || bytes[1] != 'D' || bytes[2] != 'S' || bytes[3] != ' ') {
-        NSLog(@"[DDS] Not a DDS file: %@", name);
-        return nil;
-    }
-    
-    uint32_t height = *(uint32_t *)(bytes + 12);
-    uint32_t width = *(uint32_t *)(bytes + 16);
-    uint32_t mipCount = *(uint32_t *)(bytes + 28);
-    if (mipCount == 0) mipCount = 1;
-    
-    uint32_t pfFlags = *(uint32_t *)(bytes + 80);
-    uint32_t fourCC = *(uint32_t *)(bytes + 84);
-    uint32_t rgbBitCount = *(uint32_t *)(bytes + 88);
-    uint32_t rMask = *(uint32_t *)(bytes + 92);
-    uint32_t gMask = *(uint32_t *)(bytes + 96);
-    uint32_t bMask = *(uint32_t *)(bytes + 100);
-    uint32_t aMask = *(uint32_t *)(bytes + 104);
-    
-    // Check for DXT compression (fourCC)
-    if (fourCC != 0) {
-        NSString *fcc = [NSString stringWithFormat:@"%c%c%c%c",
-                         (char)(fourCC & 0xFF), (char)((fourCC >> 8) & 0xFF),
-                         (char)((fourCC >> 16) & 0xFF), (char)((fourCC >> 24) & 0xFF)];
-        NSLog(@"[DDS] Compressed format: %@ (fourCC=0x%x) — not supported yet", fcc, fourCC);
-        return nil;
-    }
-    
-    NSLog(@"[DDS] %@: %ux%u, bitCount=%u, masks R=%x G=%x B=%x A=%x",
-          name, width, height, rgbBitCount, rMask, gMask, bMask, aMask);
-    
-    if (width == 0 || height == 0 || width > 4096 || height > 4096) {
-        NSLog(@"[DDS] Invalid dimensions");
-        return nil;
-    }
-    
-    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
-    texDesc.usage = MTLTextureUsageShaderRead;
-    id<MTLTexture> tex = [_device newTextureWithDescriptor:texDesc];
-    if (!tex) return nil;
-    
-    const uint8_t *pixelData = bytes + 128;
-    
-    if (rgbBitCount == 32) {
-        // DDS 32-bit is typically BGRA in memory (A8R8G8B8 = BGRA on little-endian)
-        // Metal MTLPixelFormatBGRA8Unorm expects: B, G, R, A
-        // Direct match — no conversion needed
-        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height)
-                mipmapLevel:0
-                  withBytes:pixelData
-                bytesPerRow:width * 4];
-    } else if (rgbBitCount == 24) {
-        // 24-bit BGR → 32-bit BGRA
-        size_t pixelCount = width * height;
-        uint8_t *rgba = new uint8_t[pixelCount * 4];
-        for (size_t i = 0; i < pixelCount; i++) {
-            rgba[i*4+0] = pixelData[i*3+0]; // B
-            rgba[i*4+1] = pixelData[i*3+1]; // G
-            rgba[i*4+2] = pixelData[i*3+2]; // R
-            rgba[i*4+3] = 255;
-        }
-        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
-        delete[] rgba;
-    } else if (rgbBitCount == 16) {
-        // 16-bit (typically 5-6-5 or 4-4-4-4) — convert
-        size_t pixelCount = width * height;
-        uint8_t *rgba = new uint8_t[pixelCount * 4];
-        for (size_t i = 0; i < pixelCount; i++) {
-            uint16_t px = pixelData[i*2] | (pixelData[i*2+1] << 8);
-            // Assume 5-6-5 format
-            uint8_t r = ((px >> 11) & 0x1F) << 3;
-            uint8_t g = ((px >> 5) & 0x3F) << 2;
-            uint8_t b = (px & 0x1F) << 3;
-            rgba[i*4+0] = b;
-            rgba[i*4+1] = g;
-            rgba[i*4+2] = r;
-            rgba[i*4+3] = 255;
-        }
-        [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
-        delete[] rgba;
-    } else {
-        NSLog(@"[DDS] Unsupported bitCount: %u", rgbBitCount);
-        return nil;
-    }
-    
-    NSLog(@"[DDS] ✓ Loaded: %@", name);
-    return tex;
-}
-
-#pragma mark - Universal Texture Loader
-
-- (id<MTLTexture>)loadTextureNamed:(NSString *)name {
-    NSString *lower = [name lowercaseString];
-    if ([lower hasSuffix:@".dds"]) {
-        return [self loadDDSTextureNamed:name];
-    } else if ([lower hasSuffix:@".tga"]) {
-        return [self loadTGATextureNamed:name];
-    }
-    return nil;
 }
 
 - (id<MTLTexture>)whiteTexture {
@@ -265,39 +266,36 @@
     _indexCount = mesh.faceCount * 3;
     
     // ===== Texture loading =====
+    NSMutableString *dbg = [NSMutableString string];
     _texture = nil;
     
-    // Extract basename from reference (e.g., "D:\...\haus2.tga" → "haus2")
-    NSString *basename = @"haus2"; // default
+    NSString *basename = @"haus2";
     if (mesh.textureName && mesh.textureName.length > 0) {
         NSString *filename = [mesh.textureName lastPathComponent];
         basename = [filename stringByDeletingPathExtension];
     }
-    NSLog(@"[MetalView] Texture basename: %@", basename);
+    [dbg appendFormat:@"basename: %@\n", basename];
     
-    // Try paths in priority order (DDS first!)
-    NSArray *tryPaths = @[
-        [NSString stringWithFormat:@"maps\\%@.dds", basename],
-        [NSString stringWithFormat:@"maps\\%@.tga", basename],
-        [NSString stringWithFormat:@"%@.dds", basename],
-        [NSString stringWithFormat:@"%@.tga", basename],
-    ];
+    // Try DDS first
+    NSString *ddsPath = [NSString stringWithFormat:@"maps\\%@.dds", basename];
+    _texture = [self loadDDSTextureNamed:ddsPath debugOut:dbg];
     
-    for (NSString *p in tryPaths) {
-        NSLog(@"[MetalView] Trying: %@", p);
-        _texture = [self loadTextureNamed:p];
-        if (_texture) {
-            NSLog(@"[MetalView] ✓ Loaded via: %@", p);
-            break;
-        }
+    // Fallback to TGA
+    if (!_texture) {
+        NSString *tgaPath = [NSString stringWithFormat:@"maps\\%@.tga", basename];
+        [dbg appendFormat:@"Trying TGA: %@\n", tgaPath];
+        _texture = [self loadTGATextureNamed:tgaPath];
+        if (_texture) [dbg appendString:@"✓ TGA loaded\n"];
     }
     
     if (!_texture) {
-        NSLog(@"[MetalView] Using white fallback");
+        [dbg appendString:@"→ White fallback\n"];
         _texture = [self whiteTexture];
     }
     
-    NSLog(@"[MetalView] Ready: %d verts, %d idx", mesh.vertexCount, _indexCount);
+    // Store debug info for screen
+    self.textureDebugInfo = dbg;
+    NSLog(@"[Texture] %@", dbg);
 }
 
 - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
