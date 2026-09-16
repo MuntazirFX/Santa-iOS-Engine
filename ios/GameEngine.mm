@@ -53,38 +53,37 @@
     NSMutableString *output = [NSMutableString string];
     [output appendFormat:@"=== .x at offset %lu ===\n", (unsigned long)offset];
     
-    // 1. Print first 64 bytes as Hex
+    // Decompress MSZip data (CK blocks start at byte 24)
+    std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
+    [output appendFormat:@"Decompressed size: %lu bytes\n", (unsigned long)decompressed.size()];
+    
+    if (decompressed.size() < 16) {
+        [output appendString:@"Decompression failed!\n"];
+        return output;
+    }
+    
+    // Print first 64 bytes as Hex
     [output appendString:@"\nFirst 64 bytes:\n"];
-    for (int i = 0; i < 64 && (offset + i) < xpkData.length; i++) {
-        [output appendFormat:@"%02x ", bytes[offset + i]];
+    for (int i = 0; i < 64 && i < (int)decompressed.size(); i++) {
+        [output appendFormat:@"%02x ", decompressed[i]];
         if ((i+1) % 16 == 0) [output appendString:@"\n"];
     }
     
-    // 2. Print ASCII of first 32 bytes
+    // Print ASCII
     [output appendString:@"\nASCII: "];
-    for (int i = 0; i < 32 && (offset + i) < xpkData.length; i++) {
-        char c = (char)bytes[offset + i];
+    for (int i = 0; i < 64 && i < (int)decompressed.size(); i++) {
+        char c = (char)decompressed[i];
         if (c >= 32 && c < 127) [output appendFormat:@"%c", c];
         else [output appendString:@"."];
     }
+    [output appendString:@"\n\n"];
     
-    // 3. Scan for CK signature from byte 8 to byte 40
-    [output appendString:@"\n\nScanning for 'CK' (0x43 0x4B):\n"];
-    int ckOffset = -1;
-    for (int i = 8; i < 40; i++) {
-        if (offset + i + 5 >= xpkData.length) break;
-        if (bytes[offset + i] == 0x43 && bytes[offset + i + 1] == 0x4B) {
-            ckOffset = i;
-            uint16_t compSize = bytes[offset + i + 2] | (bytes[offset + i + 3] << 8);
-            uint16_t uncompSize = bytes[offset + i + 4] | (bytes[offset + i + 5] << 8);
-            [output appendFormat:@"Found CK at relative offset: %d\n", i];
-            [output appendFormat:@"compSize = %u bytes\n", compSize];
-            [output appendFormat:@"uncompSize = %u bytes\n", uncompSize];
-            break;
-        }
-    }
-    if (ckOffset == -1) {
-        [output appendString:@"NO CK SIGNATURE FOUND (8-40)!\n"];
+    // Parse tokens
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), maxTokens);
+    [output appendFormat:@"Tokens (%lu):\n", (unsigned long)tokens.size()];
+    for (const auto& token : tokens) {
+        std::string desc = XFileParser::describeToken(token);
+        [output appendFormat:@"%s\n", desc.c_str()];
     }
     
     return output;
