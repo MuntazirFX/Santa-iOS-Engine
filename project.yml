@@ -21,9 +21,10 @@ targets:
         - $(SRCROOT)/src
       CLANG_CXX_LANGUAGE_STANDARD: "c++17"
       CLANG_CXX_LIBRARY: "libc++"
-      MTL_ENABLE_DEBUG_INFO: "YES"
+      MTL_FAST_MATH: "YES"
     dependencies:
       - sdk: UIKit.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
+      - sdk: simd.framework
