@@ -50,22 +50,39 @@
     const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
     if (offset >= xpkData.length) return @"Offset out of bounds";
     
-    // Header check
     NSMutableString *output = [NSMutableString string];
     [output appendFormat:@"=== .x file at offset %lu ===\n", (unsigned long)offset];
     
-    // Print header (16 bytes)
-    [output appendString:@"Header: "];
-    for (int i = 0; i < 16 && offset + i < xpkData.length; i++) {
-        char c = (char)bytes[offset + i];
+    // Check header
+    char header[17] = {0};
+    memcpy(header, bytes + offset, 16);
+    [output appendFormat:@"Header: %s\n\n", header];
+    
+    // Decompress MSZip (bzip) data
+    std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
+    [output appendFormat:@"Decompressed size: %lu bytes\n", (unsigned long)decompressed.size()];
+    
+    if (decompressed.size() < 16) {
+        [output appendString:@"Decompression failed!\n"];
+        return output;
+    }
+    
+    // Print first 32 bytes of decompressed data (Hex + ASCII)
+    [output appendString:@"\nFirst 32 bytes:\n"];
+    for (int i = 0; i < 32 && i < (int)decompressed.size(); i++) {
+        [output appendFormat:@"%02x ", decompressed[i]];
+        if ((i+1) % 16 == 0) [output appendString:@"\n"];
+    }
+    [output appendString:@"\nASCII: "];
+    for (int i = 0; i < 32 && i < (int)decompressed.size(); i++) {
+        char c = (char)decompressed[i];
         if (c >= 32 && c < 127) [output appendFormat:@"%c", c];
         else [output appendString:@"."];
     }
     [output appendString:@"\n\n"];
     
     // Parse tokens
-    std::vector<XToken> tokens = XFileParser::parseTokens(bytes + offset, xpkData.length - offset, maxTokens);
-    
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), maxTokens);
     [output appendFormat:@"Tokens (%lu):\n", (unsigned long)tokens.size()];
     for (const auto& token : tokens) {
         std::string desc = XFileParser::describeToken(token);
