@@ -13,7 +13,5 @@
 @interface GameEngine : NSObject
 + (NSData *)loadAssetNamed:(NSString *)name;
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset;
-+ (MeshData *)findSantaMesh;
-+ (NSString *)listAssetsByKeyword:(NSString *)keyword;
-+ (NSString *)findSantaModel;
++ (NSString *)scanForSantaModel;
 @end
