@@ -67,31 +67,12 @@
 
 #pragma mark - DDS Loader
 
-- (id<MTLTexture>)loadDDSTextureNamed:(NSString *)name debugOut:(NSMutableString *)dbg {
-    NSData *ddsData = [GameEngine loadAssetNamed:name];
-    if (!ddsData) {
-        [dbg appendFormat:@"DDS %@: NOT FOUND\n", name];
-        return nil;
-    }
-    
-    [dbg appendFormat:@"DDS %@: %lu bytes\n", name, (unsigned long)ddsData.length];
-    
-    if (ddsData.length < 128) {
-        [dbg appendString:@"  Too small\n"];
-        return nil;
-    }
+- (id<MTLTexture>)createTextureFromDDSData:(NSData *)ddsData debug:(NSMutableString *)dbg {
+    if (!ddsData || ddsData.length < 128) return nil;
     
     const uint8_t *bytes = (const uint8_t *)ddsData.bytes;
-    
-    if (bytes[0] != 'D' || bytes[1] != 'D' || bytes[2] != 'S' || bytes[3] != ' ') {
-        [dbg appendString:@"  Bad magic\n"];
-        return nil;
-    }
-    
     uint32_t height = *(uint32_t *)(bytes + 12);
     uint32_t width = *(uint32_t *)(bytes + 16);
-    uint32_t mipCount = *(uint32_t *)(bytes + 28);
-    uint32_t pfFlags = *(uint32_t *)(bytes + 80);
     uint32_t fourCC = *(uint32_t *)(bytes + 84);
     uint32_t rgbBitCount = *(uint32_t *)(bytes + 88);
     uint32_t rMask = *(uint32_t *)(bytes + 92);
@@ -99,32 +80,25 @@
     uint32_t bMask = *(uint32_t *)(bytes + 100);
     uint32_t aMask = *(uint32_t *)(bytes + 104);
     
-    [dbg appendFormat:@"  %ux%u mips=%u fourCC=0x%x bits=%u\n", width, height, mipCount, fourCC, rgbBitCount];
-    [dbg appendFormat:@"  R=%x G=%x B=%x A=%x\n", rMask, gMask, bMask, aMask];
-    
     if (fourCC != 0) {
-        [dbg appendString:@"  COMPRESSED (DXT) — skipping\n"];
+        [dbg appendString:@"  DXT compressed, skip\n"];
         return nil;
     }
     
-    if (width == 0 || height == 0 || width > 4096 || height > 4096) {
-        [dbg appendString:@"  Bad dims\n"];
-        return nil;
-    }
+    if (width == 0 || height == 0 || width > 4096 || height > 4096) return nil;
     
     MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
     texDesc.usage = MTLTextureUsageShaderRead;
     id<MTLTexture> tex = [_device newTextureWithDescriptor:texDesc];
-    if (!tex) {
-        [dbg appendString:@"  MTLTexture fail\n"];
-        return nil;
-    }
+    if (!tex) return nil;
     
     const uint8_t *pixelData = bytes + 128;
-    
-    [dbg appendString:@"  px[0..11]: "];
-    for (int i = 0; i < 12; i++) [dbg appendFormat:@"%02x ", pixelData[i]];
-    [dbg appendString:@"\n"];
+    size_t availableBytes = ddsData.length - 128;
+    size_t neededBytes = width * height * (rgbBitCount / 8);
+    if (availableBytes < neededBytes) {
+        [dbg appendFormat:@"  Not enough data (%lu < %lu)\n", (unsigned long)availableBytes, (unsigned long)neededBytes];
+        return nil;
+    }
     
     if (rgbBitCount == 32) {
         [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:pixelData bytesPerRow:width * 4];
@@ -142,12 +116,7 @@
         delete[] rgba;
         [dbg appendString:@"  ✓ 24-bit\n"];
     } else if (rgbBitCount == 16) {
-        // 16-bit: use masks to determine channel positions
-        // Common: 5-6-5 (R5G6B5) or 4-4-4-4 (ARGB4444) or 1-5-5-5 (A1R5G5B5)
-        int rShift = 0, gShift = 0, bShift = 0, aShift = 0;
-        int rBits = 0, gBits = 0, bBits = 0, aBits = 0;
-        
-        // Find lowest set bit = shift, count set bits = bit count
+        // Use masks to figure out the format
         auto calcShift = [](uint32_t mask) -> int {
             if (mask == 0) return 0;
             int shift = 0;
@@ -160,25 +129,23 @@
             return bits;
         };
         
-        rShift = calcShift(rMask); rBits = calcBits(rMask);
-        gShift = calcShift(gMask); gBits = calcBits(gMask);
-        bShift = calcShift(bMask); bBits = calcBits(bMask);
-        aShift = calcShift(aMask); aBits = calcBits(aMask);
+        int rShift = calcShift(rMask), rBits = calcBits(rMask);
+        int gShift = calcShift(gMask), gBits = calcBits(gMask);
+        int bShift = calcShift(bMask), bBits = calcBits(bMask);
+        int aShift = calcShift(aMask), aBits = calcBits(aMask);
         
-        [dbg appendFormat:@"  shifts R=%d G=%d B=%d A=%d bits R=%d G=%d B=%d A=%d\n",
-         rShift, gShift, bShift, aShift, rBits, gBits, bBits, aBits];
+        [dbg appendFormat:@"  R=%d/%d G=%d/%d B=%d/%d A=%d/%d\n",
+         rShift, rBits, gShift, gBits, bShift, bBits, aShift, aBits];
         
         size_t pixelCount = width * height;
         uint8_t *rgba = new uint8_t[pixelCount * 4];
         for (size_t i = 0; i < pixelCount; i++) {
             uint16_t px = pixelData[i*2] | (pixelData[i*2+1] << 8);
-            
             uint8_t r = 0, g = 0, b = 0, a = 255;
             if (rBits > 0) { uint32_t v = (px >> rShift) & ((1 << rBits) - 1); r = (v * 255) / ((1 << rBits) - 1); }
             if (gBits > 0) { uint32_t v = (px >> gShift) & ((1 << gBits) - 1); g = (v * 255) / ((1 << gBits) - 1); }
             if (bBits > 0) { uint32_t v = (px >> bShift) & ((1 << bBits) - 1); b = (v * 255) / ((1 << bBits) - 1); }
             if (aBits > 0) { uint32_t v = (px >> aShift) & ((1 << aBits) - 1); a = (v * 255) / ((1 << aBits) - 1); }
-            
             rgba[i*4+0] = b;
             rgba[i*4+1] = g;
             rgba[i*4+2] = r;
@@ -186,7 +153,7 @@
         }
         [tex replaceRegion:MTLRegionMake2D(0, 0, width, height) mipmapLevel:0 withBytes:rgba bytesPerRow:width * 4];
         delete[] rgba;
-        [dbg appendString:@"  ✓ 16-bit (with masks)\n"];
+        [dbg appendString:@"  ✓ 16-bit\n"];
     } else {
         [dbg appendFormat:@"  Unsupported bits=%u\n", rgbBitCount];
         return nil;
