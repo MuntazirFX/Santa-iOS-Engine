@@ -24,13 +24,23 @@
     
     NSMutableString *log = [NSMutableString string];
     
-    MeshData *mesh = [GameEngine extractFirstMeshAtOffset:21047];
+    // Santa model extract karein
+    [log appendString:@"=== Santa Model ===\n"];
+    MeshData *mesh = [GameEngine extractMeshFromAssetNamed:@"gfx\\weihnachtsman_000.x"];
+    
     if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
-        [log appendFormat:@"Mesh: %d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
+        [log appendFormat:@"Santa: %d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
+        [log appendFormat:@"Tex: %@\n\n", mesh.textureName ?: @"(none)"];
         [metalView setMeshToRender:mesh];
         [log appendString:metalView.textureDebugInfo];
     } else {
-        [log appendString:@"Mesh extraction failed\n"];
+        [log appendString:@"Santa extraction failed!\n\n"];
+        [log appendString:@"Trying gift model...\n"];
+        mesh = [GameEngine extractMeshFromAssetNamed:@"gfx\\geschenk_000.x"];
+        if (mesh) {
+            [log appendFormat:@"Gift: %d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
+            [metalView setMeshToRender:mesh];
+        }
     }
     
     logView.text = log;
