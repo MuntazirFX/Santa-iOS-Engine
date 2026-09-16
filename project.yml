@@ -11,6 +11,8 @@ targets:
       - path: src
         excludes:
           - "main.cpp"
+      - path: assets/xmas.xpk
+        buildPhase: resources
     settings:
       INFOPLIST_FILE: ios/Info.plist
       CODE_SIGNING_ALLOWED: NO
