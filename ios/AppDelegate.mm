@@ -21,13 +21,13 @@
     metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [viewController.view addSubview:metalView];
     
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 50, screenBounds.size.width, 100)];
-    label.text = engineStatus;
-    label.numberOfLines = 0;
-    label.textColor = [UIColor whiteColor];
-    label.textAlignment = NSTextAlignmentCenter;
-    label.font = [UIFont systemFontOfSize:12];
-    [viewController.view addSubview:label];
+// UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 50, screenBounds.size.width, 100)];
+// label.text = engineStatus;
+// label.numberOfLines = 0;
+// label.textColor = [UIColor whiteColor];
+// label.textAlignment = NSTextAlignmentCenter;
+// label.font = [UIFont systemFontOfSize:12];
+// [viewController.view addSubview:label];
     
     self.window.rootViewController = viewController;
     [self.window makeKeyAndVisible];
