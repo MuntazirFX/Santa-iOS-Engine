@@ -216,6 +216,7 @@
     const float *uvs = mesh.uvs ? (const float *)mesh.uvs.bytes : NULL;
     const uint32_t *faces = (const uint32_t *)mesh.indices.bytes;
     
+    // Bounding box for normalization
     float minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
     for (int i = 0; i < mesh.vertexCount; i++) {
         float x = verts[i*3], y = verts[i*3+1], z = verts[i*3+2];
@@ -247,55 +248,49 @@
     _indexBuffer = [_device newBufferWithBytes:faces length:mesh.faceCount*3*sizeof(uint32_t) options:MTLResourceStorageModeShared];
     _indexCount = mesh.faceCount * 3;
     
+    // ===== Texture loading =====
     NSMutableString *dbg = [NSMutableString string];
     _texture = nil;
     
-    NSString *basename = @"haus2";
+    NSString *texBasename = @"weihnachtsman"; // default Santa
     if (mesh.textureName && mesh.textureName.length > 0) {
-        // Windows path fix: backslash ko forward slash mein badlein
         NSString *ref = [mesh.textureName stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
         NSString *filename = [ref lastPathComponent];
         if (filename.length > 0) {
-            basename = [filename stringByDeletingPathExtension];
+            texBasename = [filename stringByDeletingPathExtension];
         }
     }
-    [dbg appendFormat:@"basename: %@\n", basename];
+    [dbg appendFormat:@"Texture basename: %@\n", texBasename];
     
-    // DDS offsets jo humne XPK scan se dhoonde the (uncompressed, valid dims)
-    NSArray *ddsOffsets = @[
-        @5659034,  // 256x256 — house likely
-        @5833924,  // 256x256
-        @6030704,  // 256x256
-        @6467782,  // 256x256
-        @4419012,  // 512x512
-        @5118190,  // 512x512
-        @6615410,  // 512x512 (32-bit)
-        @1578864,  // 128x128 (fallback)
-        @8253169,  // 512x512
-        @8777585,  // 512x512
-        @9476763,  // 512x512
-    ];
+    // 1. Direct name try karein
+    NSString *ddsPath = [NSString stringWithFormat:@"maps\\%@.dds", texBasename];
+    _texture = [self loadDDSTextureNamed:ddsPath debugOut:dbg];
     
-    for (NSNumber *off in ddsOffsets) {
-        NSData *ddsData = [GameEngine loadDDSAtOffset:[off unsignedIntegerValue]];
-        if (!ddsData) continue;
-        
-        const uint8_t *b = (const uint8_t *)ddsData.bytes;
-        if (b[0] != 'D' || b[1] != 'D' || b[2] != 'S' || b[3] != ' ') continue;
-        
-        uint32_t w = *(uint32_t *)(b + 16);
-        uint32_t h = *(uint32_t *)(b + 12);
-        [dbg appendFormat:@"Trying offset %@: %ux%u\n", off, w, h];
-        
-        // Manually create texture from this data
-        id<MTLTexture> tex = [self createTextureFromDDSData:ddsData debug:dbg];
-        if (tex) {
-            _texture = tex;
-            [dbg appendFormat:@"  ✓ Loaded via offset %@\n", off];
-            break;
+    // 2. Common Santa textures fallback
+    if (!_texture) {
+        NSArray *fallbacks = @[
+            @"maps\\weihnachtsman.dds",
+            @"maps\\weihnachtsman1.dds",
+            @"maps\\santa.dds",
+            @"maps\\schneemann.dds",
+        ];
+        for (NSString *p in fallbacks) {
+            _texture = [self loadDDSTextureNamed:p debugOut:dbg];
+            if (_texture) {
+                [dbg appendFormat:@"Fallback: %@\n", p];
+                break;
+            }
         }
     }
     
+    // 3. Agar X-File mein .tga reference hai, TGA try karein
+    if (!_texture) {
+        NSString *tgaPath = [NSString stringWithFormat:@"maps\\%@.tga", texBasename];
+        _texture = [self loadTGATextureNamed:tgaPath];
+        if (_texture) [dbg appendString:@"TGA loaded\n"];
+    }
+    
+    // 4. Last resort — white
     if (!_texture) {
         [dbg appendString:@"→ White fallback\n"];
         _texture = [self whiteTexture];
