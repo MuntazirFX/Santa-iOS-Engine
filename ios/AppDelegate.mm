@@ -12,12 +12,12 @@
     UITextView *textView = [[UITextView alloc] initWithFrame:viewController.view.bounds];
     textView.backgroundColor = [UIColor blackColor];
     textView.textColor = [UIColor greenColor];
-    textView.font = [UIFont fontWithName:@"Courier" size:9];
+    textView.font = [UIFont fontWithName:@"Courier" size:8];
     textView.editable = NO;
     [viewController.view addSubview:textView];
     
-    // .x file at offset 21047 parse karein
-    NSString *result = [GameEngine parseXFileAtOffset:21047 maxTokens:80];
+    // 300 tokens tak scan karein
+    NSString *result = [GameEngine parseXFileAtOffset:21047 maxTokens:300];
     textView.text = result;
     
     self.window.rootViewController = viewController;
