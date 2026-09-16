@@ -24,7 +24,7 @@
     
     NSMutableString *log = [NSMutableString string];
     
-    // Try @171669 (704 verts, 869 faces) - likely Santa
+    // Try @171669 (704 verts, 869 faces) — likely a big model
     MeshData *mesh = [GameEngine extractMeshAtOffset:171669];
     
     if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
