@@ -48,23 +48,18 @@
     
     if (data.size() < 16) return nil;
     
-    // Parse all tokens
     std::vector<XToken> tokens = XFileParser::parseTokens(data.data(), data.size(), 2000);
     NSLog(@"[Mesh] Total tokens: %lu", (unsigned long)tokens.size());
     
-    // Walk through tokens to find "Mesh" NAME
     for (size_t i = 0; i < tokens.size(); i++) {
         if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
-            NSLog(@"[Mesh] Found 'Mesh' at token %zu", i);
-            
             size_t j = i + 1;
-            if (j < tokens.size() && tokens[j].type == 10) j++; // skip {
+            if (j < tokens.size() && tokens[j].type == 10) j++; // {
             
-            if (j < tokens.size() && tokens[j].type == 6) j++; // skip ILIST
+            if (j < tokens.size() && tokens[j].type == 6) j++; // ILIST (material)
             
             if (j < tokens.size() && tokens[j].type == 7) {
                 const auto& verts = tokens[j].floatList;
-                NSLog(@"[Mesh] Vertices: %zu floats", verts.size());
                 
                 if (verts.size() >= 3) {
                     MeshData *mesh = [[MeshData alloc] init];
@@ -73,15 +68,15 @@
                     
                     j++;
                     if (j < tokens.size() && tokens[j].type == 6) {
-                        mesh.faceCount = (int)(tokens[j].intList.size() / 3);
+                        const auto& faces = tokens[j].intList;
+                        mesh.faceCount = (int)(faces.size() / 3);
+                        mesh.indices = [NSMutableData dataWithBytes:faces.data() length:faces.size() * 4];
                     }
                     return mesh;
                 }
             }
         }
     }
-    
-    NSLog(@"[Mesh] Not found");
     return nil;
 }
 
