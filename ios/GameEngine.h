@@ -14,5 +14,6 @@
 + (NSData *)loadAssetNamed:(NSString *)name;
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
++ (NSString *)findAllMeshes;
 + (NSString *)findSantaModel;
 @end
