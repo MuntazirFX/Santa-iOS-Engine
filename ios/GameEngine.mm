@@ -12,20 +12,13 @@
 
 + (NSString *)startEngine {
     NSMutableString *status = [NSMutableString string];
-    [status appendString:@"Engine Started\n"];
-    
     NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    if (resourcePath == nil) {
-        [status appendString:@"ERROR: xmas.xpk not found!"];
-        return status;
-    }
+    if (resourcePath == nil) return @"ERROR: xmas.xpk not found!";
     
     std::string xpkPath = [resourcePath UTF8String];
     AssetManager assetMgr;
     if (assetMgr.loadXPK(xpkPath)) {
-        [status appendString:@"XPK Loaded!\n"];
-    } else {
-        [status appendString:@"XPK failed!"];
+        [status appendString:@"XPK Loaded!"];
     }
     return status;
 }
@@ -45,6 +38,34 @@
     return [NSData dataWithBytes:data.data() length:data.size()];
 }
 
+// List all assets matching a keyword (case-insensitive)
++ (NSString *)listAssetsByKeyword:(NSString *)keyword {
+    NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    if (!resourcePath) return @"No XPK";
+    
+    std::string xpkPath = [resourcePath UTF8String];
+    AssetManager assetMgr;
+    if (!assetMgr.loadXPK(xpkPath)) return @"XPK load failed";
+    
+    std::vector<std::string> all = assetMgr.getAllFilenames();
+    std::string kw = [keyword UTF8String];
+    std::transform(kw.begin(), kw.end(), kw.begin(), ::tolower);
+    
+    NSMutableString *out = [NSMutableString string];
+    int count = 0;
+    for (const auto& name : all) {
+        std::string lower = name;
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+        if (lower.find(kw) != std::string::npos) {
+            [out appendFormat:@"%s\n", name.c_str()];
+            count++;
+            if (count >= 40) break;
+        }
+    }
+    if (count == 0) [out appendFormat:@"(none for '%@')\n", keyword];
+    return out;
+}
+
 + (NSString *)parseXFileAtOffset:(NSUInteger)offset maxTokens:(int)maxTokens {
     NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
@@ -54,7 +75,6 @@
     if (offset >= xpkData.length) return @"Offset out of bounds";
     
     std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
-    
     if (decompressed.size() < 16) return @"Decompression failed";
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), maxTokens);
@@ -78,7 +98,6 @@
     if (data.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(data.data(), data.size(), 2000);
-    NSLog(@"[Mesh] Total tokens: %lu", (unsigned long)tokens.size());
     
     for (size_t i = 0; i < tokens.size(); i++) {
         if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
@@ -98,7 +117,6 @@
             
             if (j < tokens.size() && tokens[j].type == 6) {
                 const auto& raw = tokens[j].intList;
-                
                 std::vector<uint32_t> triangles;
                 size_t p = 0;
                 
