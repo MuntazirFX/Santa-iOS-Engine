@@ -96,10 +96,22 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
     size_t offset = 0;
     int templateDepth = 0;
     int braceDepth = 0;
+    int skipCount = 0;
     
-    while (offset < size && (int)tokens.size() < maxTokens) {
+    while (offset + 2 <= size && (int)tokens.size() < maxTokens) {
         uint16_t tokenType = readU16(data, offset);
         offset += 2;
+        
+        // Validate token type (valid range: 0-51)
+        if (tokenType > 51) {
+            skipCount++;
+            if (skipCount > 1000) {
+                // Too many bad tokens — parser is lost
+                break;
+            }
+            continue; // Try next 2 bytes
+        }
+        skipCount = 0;
         
         XToken token;
         token.type = tokenType;
@@ -110,24 +122,33 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
         
         switch (tokenType) {
             case 1: { // NAME
+                if (offset + 4 > size) { offset = size; break; }
                 uint32_t len = readU32(data, offset);
                 offset += 4;
-                if (offset + len > size) { offset = size; break; }
+                if (len > 10000 || offset + len > size) { offset = size; break; }
                 token.name = std::string((const char*)(data + offset), len);
                 offset += len;
                 break;
             }
             case 2: { // STRING
+                if (offset + 4 > size) { offset = size; break; }
                 uint32_t len = readU32(data, offset);
                 offset += 4;
-                if (offset + len > size) { offset = size; break; }
+                if (len > 10000 || offset + len > size) { offset = size; break; }
                 token.name = std::string((const char*)(data + offset), len);
                 offset += len;
                 break;
             }
-            case 3: token.intValue = (int)readU32(data, offset); offset += 4; break;
-            case 5: offset += 16; break; // GUID
+            case 3: // INTEGER
+                if (offset + 4 > size) { offset = size; break; }
+                token.intValue = (int)readU32(data, offset); offset += 4;
+                break;
+            case 5: // GUID
+                if (offset + 16 > size) { offset = size; break; }
+                offset += 16;
+                break;
             case 6: { // INTEGER_LIST
+                if (offset + 4 > size) { offset = size; break; }
                 uint32_t count = readU32(data, offset);
                 offset += 4;
                 if (count > 100000) { offset = size; break; }
@@ -138,6 +159,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 break;
             }
             case 7: { // FLOAT_LIST
+                if (offset + 4 > size) { offset = size; break; }
                 uint32_t count = readU32(data, offset);
                 offset += 4;
                 if (count > 100000) { offset = size; break; }
@@ -156,7 +178,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 braceDepth--;
                 if (braceDepth <= 0) {
                     braceDepth = 0;
-                    templateDepth = 0; // Template ended
+                    templateDepth = 0;
                 }
                 break;
             case 12: case 13: case 14: case 15:
@@ -166,33 +188,62 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 templateDepth++;
                 break;
             case 40: // WORD
-                if (templateDepth > 0) {
-                    // Template body — no value
-                } else {
+                if (templateDepth == 0) {
+                    if (offset + 2 > size) { offset = size; break; }
                     token.wordValue = readU16(data, offset); offset += 2;
                 }
                 break;
             case 41: // DWORD
-                if (templateDepth > 0) {
-                    // Template body — no value
-                } else {
+                if (templateDepth == 0) {
+                    if (offset + 4 > size) { offset = size; break; }
                     token.dwordValue = (int)readU32(data, offset); offset += 4;
                 }
                 break;
             case 42: // FLOAT
-                if (templateDepth > 0) {
-                    // Template body — no value
-                } else {
+                if (templateDepth == 0) {
+                    if (offset + 4 > size) { offset = size; break; }
                     uint32_t bits = readU32(data, offset);
                     memcpy(&token.floatValue, &bits, 4);
                     offset += 4;
                 }
                 break;
-            case 43: if (templateDepth == 0) offset += 8; break;
-            case 44: case 45: if (templateDepth == 0) offset += 1; break;
-            case 46: if (templateDepth == 0) offset += 2; break;
-            case 47: if (templateDepth == 0) offset += 4; break;
-            default: offset = size; break;
+            case 43: // DOUBLE
+                if (templateDepth == 0) {
+                    if (offset + 8 > size) { offset = size; break; }
+                    offset += 8;
+                }
+                break;
+            case 44: case 45: // CHAR, UCHAR
+                if (templateDepth == 0) {
+                    if (offset + 1 > size) { offset = size; break; }
+                    offset += 1;
+                }
+                break;
+            case 46: // SWORD
+                if (templateDepth == 0) {
+                    if (offset + 2 > size) { offset = size; break; }
+                    offset += 2;
+                }
+                break;
+            case 47: // SDWORD
+                if (templateDepth == 0) {
+                    if (offset + 4 > size) { offset = size; break; }
+                    offset += 4;
+                }
+                break;
+            case 48: case 49: case 50: // LPSTR, UNICODE, CSTRING
+                if (templateDepth == 0) {
+                    if (offset + 4 > size) { offset = size; break; }
+                    uint32_t len = readU32(data, offset);
+                    offset += 4;
+                    if (len > 10000 || offset + len > size) { offset = size; break; }
+                    offset += len;
+                }
+                break;
+            case 51: // ARRAY
+                break;
+            default:
+                break;
         }
         tokens.push_back(token);
     }
