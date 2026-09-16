@@ -114,7 +114,7 @@
     [enc setVertexBytes:vertices length:sizeof(vertices) atIndex:0];
     [enc setFragmentTexture:_texture atIndex:0];
     [enc setFragmentSamplerState:_sampler atIndex:0];
-    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     [enc endEncoding];
     
     [cmdBuf presentDrawable:view.currentDrawable];
