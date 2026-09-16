@@ -9,39 +9,57 @@
     UIViewController *viewController = [[UIViewController alloc] init];
     viewController.view.backgroundColor = [UIColor blackColor];
     
-    // Screen par logs dikhane ke liye TextView
     UITextView *textView = [[UITextView alloc] initWithFrame:viewController.view.bounds];
     textView.backgroundColor = [UIColor blackColor];
     textView.textColor = [UIColor greenColor];
-    textView.font = [UIFont fontWithName:@"Courier" size:11];
+    textView.font = [UIFont fontWithName:@"Courier" size:10];
     textView.editable = NO;
     [viewController.view addSubview:textView];
     
-    // .x file load karke hex dump screen par dikhayein
     NSMutableString *output = [NSMutableString string];
-    NSData *xData = [GameEngine loadAssetNamed:@"gfx\\schneemann_000.x"];
     
-    if (xData && xData.length > 0) {
-        [output appendFormat:@"File size: %lu bytes\n\n", (unsigned long)xData.length];
-        
-        const uint8_t *bytes = (const uint8_t *)xData.bytes;
-        [output appendString:@"First 128 bytes (Hex):\n"];
-        for (int i = 0; i < 128 && i < xData.length; i++) {
-            [output appendFormat:@"%02x ", bytes[i]];
-            if ((i + 1) % 16 == 0) [output appendString:@"\n"];
+    // STEP 1: fire.txt load karke verify karein
+    NSData *fireData = [GameEngine loadAssetNamed:@"effects\\fire.txt"];
+    if (fireData && fireData.length > 0) {
+        [output appendFormat:@"fire.txt loaded: %lu bytes\n", (unsigned long)fireData.length];
+        const uint8_t *fb = (const uint8_t *)fireData.bytes;
+        [output appendString:@"First 64 ASCII:\n"];
+        for (int i = 0; i < 64 && i < fireData.length; i++) {
+            char c = (char)fb[i];
+            if (c >= 32 && c < 127) [output appendFormat:@"%c", c];
+            else [output appendString:@"."];
         }
+        [output appendString:@"\n\n"];
+    } else {
+        [output appendString:@"fire.txt FAILED to load!\n\n"];
+    }
+    
+    // STEP 2: Poori XPK file mein 'xof ' (0x78 0x6f 0x66 0x20) dhoondein
+    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
+    
+    if (xpkData && xpkData.length > 0) {
+        [output appendFormat:@"XPK size: %lu bytes\n", (unsigned long)xpkData.length];
+        [output appendString:@"Searching for 'xof ' signature...\n\n"];
         
-        [output appendString:@"\nASCII:\n"];
-        for (int i = 0; i < 128 && i < xData.length; i++) {
-            char c = (char)bytes[i];
-            if (c >= 32 && c < 127) {
-                [output appendFormat:@"%c", c];
-            } else {
-                [output appendString:@"."];
+        const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
+        int found = 0;
+        for (NSUInteger i = 0; i < xpkData.length - 4; i++) {
+            if (bytes[i] == 0x78 && bytes[i+1] == 0x6f && bytes[i+2] == 0x66 && bytes[i+3] == 0x20) {
+                // Version bytes (next 4 bytes after "xof ")
+                uint8_t v1 = bytes[i+4];
+                uint8_t v2 = bytes[i+5];
+                uint8_t v3 = bytes[i+6];
+                uint8_t v4 = bytes[i+7];
+                
+                [output appendFormat:@"Found at %lu: xof %c%c%c%c\n", (unsigned long)i, v1, v2, v3, v4];
+                found++;
+                if (found >= 5) break;
             }
         }
+        [output appendFormat:@"\nTotal: %d found", found];
     } else {
-        [output appendString:@"Failed to load .x file!\nCheck Console/Logs."];
+        [output appendString:@"XPK file not found!\n"];
     }
     
     textView.text = output;
