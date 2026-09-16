@@ -17,7 +17,7 @@ static uint16_t readU16(const uint8_t* data, size_t offset) {
     return data[offset] | (data[offset+1] << 8);
 }
 
-// bzip decompression: deflate stream starts at CK+2 (compSize field position)
+// bzip decompression: deflate starts at CK+2
 std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t size) {
     xpkDebugLog().clear();
     std::vector<uint8_t> output;
@@ -27,21 +27,17 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
     size_t offset = 0;
     int blockNum = 0;
     
-    while (offset + 8 <= size && blockNum < 100) {
-        // Find CK marker
+    while (offset + 8 <= size && blockNum < 500) {
         while (offset + 1 < size && !(data[offset] == 0x43 && data[offset+1] == 0x4B)) {
             offset++;
         }
         if (offset + 8 > size) break;
         
         size_t ckPos = offset;
-        size_t startOffset = ckPos + 2;  // Deflate starts at CK+2
+        size_t startOffset = ckPos + 2;
         
         uint16_t uncompSize = readU16(data, ckPos + 4);
         if (uncompSize == 0 || uncompSize > 60000) {
-            snprintf(buf, sizeof(buf), "Block %d: CK=%zu, bad uncomp=%u, skip\n",
-                     blockNum, ckPos, uncompSize);
-            xpkDebugLog() += buf;
             offset = ckPos + 2;
             blockNum++;
             continue;
@@ -61,17 +57,16 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
             uLong totalIn = strm.total_in;
             inflateEnd(&strm);
             
-            snprintf(buf, sizeof(buf), "Block %d: CK=%zu, uncomp=%u, ret=%d, out=%lu, in=%lu\n",
-                     blockNum, ckPos, uncompSize, ret, totalOut, totalIn);
-            xpkDebugLog() += buf;
-            
             if (totalOut > 0) {
                 output.insert(output.end(), outBuf, outBuf + totalOut);
             }
             delete[] outBuf;
             
-            // Move past this deflate stream
-            offset = startOffset + totalIn;
+            if (ret == Z_STREAM_END) {
+                offset = startOffset + totalIn;
+            } else {
+                offset = ckPos + 2;
+            }
             blockNum++;
             continue;
         } else {
@@ -89,7 +84,7 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
     return output;
 }
 
-// Token parser with template body awareness
+// Token parser
 std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, int maxTokens) {
     std::vector<XToken> tokens;
     if (size < 4) return tokens;
@@ -102,14 +97,10 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
         uint16_t tokenType = readU16(data, offset);
         offset += 2;
         
-        // Validate token type (valid range: 0-51)
         if (tokenType > 51) {
             skipCount++;
-            if (skipCount > 1000) {
-                // Too many bad tokens — parser is lost
-                break;
-            }
-            continue; // Try next 2 bytes
+            if (skipCount > 1000) break;
+            continue;
         }
         skipCount = 0;
         
@@ -121,7 +112,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
         token.wordValue = 0;
         
         switch (tokenType) {
-            case 1: { // NAME
+            case 1: {
                 if (offset + 4 > size) { offset = size; break; }
                 uint32_t len = readU32(data, offset);
                 offset += 4;
@@ -130,7 +121,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 offset += len;
                 break;
             }
-            case 2: { // STRING
+            case 2: {
                 if (offset + 4 > size) { offset = size; break; }
                 uint32_t len = readU32(data, offset);
                 offset += 4;
@@ -139,15 +130,15 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 offset += len;
                 break;
             }
-            case 3: // INTEGER
+            case 3:
                 if (offset + 4 > size) { offset = size; break; }
                 token.intValue = (int)readU32(data, offset); offset += 4;
                 break;
-            case 5: // GUID
+            case 5:
                 if (offset + 16 > size) { offset = size; break; }
                 offset += 16;
                 break;
-            case 6: { // INTEGER_LIST
+            case 6: {
                 if (offset + 4 > size) { offset = size; break; }
                 uint32_t count = readU32(data, offset);
                 offset += 4;
@@ -158,7 +149,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             }
-            case 7: { // FLOAT_LIST
+            case 7: {
                 if (offset + 4 > size) { offset = size; break; }
                 uint32_t count = readU32(data, offset);
                 offset += 4;
@@ -171,35 +162,28 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             }
-            case 10: // {
-                braceDepth++;
-                break;
-            case 11: // }
+            case 10: braceDepth++; break;
+            case 11:
                 braceDepth--;
-                if (braceDepth <= 0) {
-                    braceDepth = 0;
-                    templateDepth = 0;
-                }
+                if (braceDepth <= 0) { braceDepth = 0; templateDepth = 0; }
                 break;
             case 12: case 13: case 14: case 15:
             case 16: case 17: case 18: case 19: case 20:
                 break;
-            case 31: // TEMPLATE
-                templateDepth++;
-                break;
-            case 40: // WORD
+            case 31: templateDepth++; break;
+            case 40:
                 if (templateDepth == 0) {
                     if (offset + 2 > size) { offset = size; break; }
                     token.wordValue = readU16(data, offset); offset += 2;
                 }
                 break;
-            case 41: // DWORD
+            case 41:
                 if (templateDepth == 0) {
                     if (offset + 4 > size) { offset = size; break; }
                     token.dwordValue = (int)readU32(data, offset); offset += 4;
                 }
                 break;
-            case 42: // FLOAT
+            case 42:
                 if (templateDepth == 0) {
                     if (offset + 4 > size) { offset = size; break; }
                     uint32_t bits = readU32(data, offset);
@@ -207,31 +191,32 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                     offset += 4;
                 }
                 break;
-            case 43: // DOUBLE
+            case 43:
                 if (templateDepth == 0) {
                     if (offset + 8 > size) { offset = size; break; }
                     offset += 8;
                 }
                 break;
-            case 44: case 45: // CHAR, UCHAR
+            case 44: case 45:
                 if (templateDepth == 0) {
                     if (offset + 1 > size) { offset = size; break; }
                     offset += 1;
                 }
                 break;
-            case 46: // SWORD
+            case 46:
                 if (templateDepth == 0) {
                     if (offset + 2 > size) { offset = size; break; }
                     offset += 2;
                 }
                 break;
-            case 47: // SDWORD
+            case 47:
                 if (templateDepth == 0) {
                     if (offset + 4 > size) { offset = size; break; }
                     offset += 4;
                 }
                 break;
-            case 48: case 49: case 50: // LPSTR, UNICODE, CSTRING
+            case 48: case 49: case 50:
+                // LPSTR, UNICODE, CSTRING — string data
                 if (templateDepth == 0) {
                     if (offset + 4 > size) { offset = size; break; }
                     uint32_t len = readU32(data, offset);
@@ -240,7 +225,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                     offset += len;
                 }
                 break;
-            case 51: // ARRAY
+            case 51:
                 break;
             default:
                 break;
@@ -278,7 +263,11 @@ std::string XFileParser::describeToken(const XToken& token) {
         case 44: oss << "CHAR"; break;
         case 45: oss << "UCHAR"; break;
         case 46: oss << "SWORD"; break;
-        case 47: oss << "DWORD2"; break;
+        case 47: oss << "SDWORD"; break;
+        case 48: oss << "LPSTR"; break;
+        case 49: oss << "UNICODE"; break;
+        case 50: oss << "CSTRING"; break;
+        case 51: oss << "ARRAY"; break;
         default: oss << "??(" << token.type << ")"; break;
     }
     return oss.str();
