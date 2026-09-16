@@ -22,6 +22,7 @@ targets:
       CLANG_CXX_LANGUAGE_STANDARD: "c++17"
       CLANG_CXX_LIBRARY: "libc++"
       MTL_FAST_MATH: "YES"
+      OTHER_LDFLAGS: "-lz"
     dependencies:
       - sdk: UIKit.framework
       - sdk: Metal.framework
