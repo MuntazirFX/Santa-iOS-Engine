@@ -55,32 +55,37 @@
     }
     return self;
 }
-
-- (void)createTexture {
-    NSData *tgaData = [GameEngine loadTGATextureData];
-    if (!tgaData || tgaData.length == 0) {
-        NSLog(@"[MetalView] Failed to load TGA data!");
+ - (void)createTexture {
+    // 3D model file (.x) load karke hex dump karein
+    NSData *xData = [GameEngine loadAssetNamed:@"gfx\\schneemann_000.x"];
+    if (!xData || xData.length == 0) {
+        NSLog(@"[MetalView] Failed to load .x file!");
         return;
     }
     
-    uint16_t width = 256;
-    uint16_t height = 256;
+    NSLog(@"[MetalView] .x file size: %lu bytes", (unsigned long)xData.length);
     
-    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
-    texDesc.usage = MTLTextureUsageShaderRead;
-    
-    _texture = [_device newTextureWithDescriptor:texDesc];
-    if (!_texture) {
-        NSLog(@"[MetalView] Failed to create MTLTexture!");
-        return;
+    // Pehle 64 bytes hex dump karein
+    const uint8_t *bytes = (const uint8_t *)xData.bytes;
+    NSMutableString *hexDump = [NSMutableString string];
+    for (int i = 0; i < 64 && i < xData.length; i++) {
+        [hexDump appendFormat:@"%02x ", bytes[i]];
+        if ((i + 1) % 16 == 0) [hexDump appendString:@"\n"];
     }
+    NSLog(@"[MetalView] First 64 bytes:\n%@", hexDump);
     
-    [_texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
-                mipmapLevel:0
-                  withBytes:tgaData.bytes
-                bytesPerRow:width * 4];
-    
-    NSLog(@"[MetalView] Texture created: %dx%d", width, height);
+    // ASCII check
+    NSMutableString *ascii = [NSMutableString string];
+    for (int i = 0; i < 64 && i < xData.length; i++) {
+        char c = (char)bytes[i];
+        if (c >= 32 && c < 127) {
+            [ascii appendFormat:@"%c", c];
+        } else {
+            [ascii appendString:@"."];
+        }
+    }
+    NSLog(@"[MetalView] ASCII: %@", ascii);
+}
 }
 
 - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
