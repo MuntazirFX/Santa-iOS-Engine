@@ -91,12 +91,12 @@
     _frameCount++;
     if (_frameCount <= 3) NSLog(@"[MetalView] draw frame %d", _frameCount);
     
-    // Vertex data: X, Y, Z, W, U, V (6 floats per vertex)
+// V coordinate flipped (TGA bottom-up hota hai)
     static const float vertices[] = {
         // Position              UV
-         0.0,  0.8, 0.0, 1.0,    0.5, 0.0,   // Top
-        -0.8, -0.8, 0.0, 1.0,    0.0, 1.0,   // Bottom-left
-         0.8, -0.8, 0.0, 1.0,    1.0, 1.0,   // Bottom-right
+         0.0,  0.8, 0.0, 1.0,    0.5, 1.0,   // Top (V flipped: 0.0 → 1.0)
+        -0.8, -0.8, 0.0, 1.0,    0.0, 0.0,   // Bottom-left (V flipped: 1.0 → 0.0)
+         0.8, -0.8, 0.0, 1.0,    1.0, 0.0,   // Bottom-right (V flipped: 1.0 → 0.0)
     };
     
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
