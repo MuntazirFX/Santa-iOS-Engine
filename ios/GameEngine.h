@@ -15,4 +15,5 @@
 + (NSString *)parseXFileAtOffset:(NSUInteger)offset maxTokens:(int)maxTokens;
 + (MeshData *)extractFirstMeshAtOffset:(NSUInteger)offset;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
++ (NSString *)scanXPKForDDS;
 @end
