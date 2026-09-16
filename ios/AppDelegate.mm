@@ -14,11 +14,10 @@
     metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [viewController.view addSubview:metalView];
     
-    // Extract mesh and send to Metal view
     MeshData *mesh = [GameEngine extractFirstMeshAtOffset:21047];
     if (mesh) {
         [metalView setMeshToRender:mesh];
-        NSLog(@"[AppDelegate] Mesh sent: %d verts, %d faces", mesh.vertexCount, mesh.faceCount);
+        NSLog(@"[AppDelegate] Mesh sent to view");
     }
     
     self.window.rootViewController = viewController;
