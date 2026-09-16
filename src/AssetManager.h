@@ -18,8 +18,10 @@ public:
 
     bool loadXPK(const std::string& filepath);
     std::vector<uint8_t> getAssetData(const std::string& filename);
+    std::vector<std::string> getAllFilenames();
 
 private:
     std::ifstream xpkFile;
     std::unordered_map<std::string, XPKEntry> fileTable;
+    std::vector<std::string> orderedFilenames;
 };
