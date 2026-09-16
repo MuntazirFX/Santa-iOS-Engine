@@ -149,29 +149,39 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             }
-            case 10: braceDepth++; break; // { 
-            case 11: braceDepth--; if (braceDepth < 0) braceDepth = 0; break; // }
+            case 10: // {
+                braceDepth++;
+                break;
+            case 11: // }
+                braceDepth--;
+                if (braceDepth <= 0) {
+                    braceDepth = 0;
+                    templateDepth = 0; // Template ended
+                }
+                break;
             case 12: case 13: case 14: case 15:
             case 16: case 17: case 18: case 19: case 20:
                 break;
-            case 31: templateDepth++; break; // TEMPLATE
-            case 40: // WORD — in template body, no value; in data, 2 bytes
+            case 31: // TEMPLATE
+                templateDepth++;
+                break;
+            case 40: // WORD
                 if (templateDepth > 0) {
-                    // Template: next token is NAME, no value consumed
+                    // Template body — no value
                 } else {
                     token.wordValue = readU16(data, offset); offset += 2;
                 }
                 break;
             case 41: // DWORD
                 if (templateDepth > 0) {
-                    // Template: no value consumed
+                    // Template body — no value
                 } else {
                     token.dwordValue = (int)readU32(data, offset); offset += 4;
                 }
                 break;
             case 42: // FLOAT
                 if (templateDepth > 0) {
-                    // Template: no value consumed
+                    // Template body — no value
                 } else {
                     uint32_t bits = readU32(data, offset);
                     memcpy(&token.floatValue, &bits, 4);
@@ -185,11 +195,6 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
             default: offset = size; break;
         }
         tokens.push_back(token);
-        
-        // Reset template depth when brace level returns to 0
-        if (braceDepth == 0 && templateDepth > 0) {
-            templateDepth = 0;
-        }
     }
     return tokens;
 }
