@@ -225,4 +225,131 @@
     return nil;
 }
 
++ (MeshData *)extractSantaMesh {
+    // Load Santa asset by name
+    NSData *data = [self loadAssetNamed:@"gfx\\weihnachtsman_000.x"];
+    if (!data || data.length < 20) {
+        NSLog(@"[Santa] Asset not loaded");
+        return nil;
+    }
+    
+    NSLog(@"[Santa] Asset data: %lu bytes", (unsigned long)data.length);
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
+    
+    // Data ke pehle 2000 bytes mein 'xof ' signature dhoondein
+    size_t xofPos = SIZE_MAX;
+    for (size_t i = 0; i < data.length - 4 && i < 2000; i++) {
+        if (bytes[i] == 'x' && bytes[i+1] == 'o' && bytes[i+2] == 'f' && bytes[i+3] == ' ') {
+            xofPos = i;
+            NSLog(@"[Santa] Found 'xof' at +%zu", i);
+            break;
+        }
+    }
+    
+    if (xofPos == SIZE_MAX) {
+        NSLog(@"[Santa] No 'xof' signature in first 2000 bytes");
+        return nil;
+    }
+    
+    // Decompress from that position
+    std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + xofPos, data.length - xofPos);
+    if (decompressed.size() < 16) {
+        NSLog(@"[Santa] Decompression failed");
+        return nil;
+    }
+    
+    NSLog(@"[Santa] Decompressed: %lu bytes", (unsigned long)decompressed.size());
+    
+    // Parse tokens and find mesh
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 3000);
+    NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
+    
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
+            size_t j = i + 1;
+            if (j < tokens.size() && tokens[j].type == 10) j++;
+            if (j < tokens.size() && tokens[j].type == 6) j++;
+            
+            if (j >= tokens.size() || tokens[j].type != 7) continue;
+            const auto& verts = tokens[j].floatList;
+            if (verts.size() < 9) continue;
+            
+            MeshData *mesh = [[MeshData alloc] init];
+            mesh.vertexCount = (int)(verts.size() / 3);
+            mesh.vertices = [NSMutableData dataWithBytes:verts.data() length:verts.size() * 4];
+            mesh.offset = xofPos;
+            
+            j++;
+            
+            if (j < tokens.size() && tokens[j].type == 6) {
+                const auto& raw = tokens[j].intList;
+                std::vector<uint32_t> tri;
+                size_t p = 0;
+                
+                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
+                    while (p < raw.size()) {
+                        uint32_t cnt = raw[p++];
+                        if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
+                        for (uint32_t k = 1; k + 1 < cnt; k++) {
+                            tri.push_back((uint32_t)raw[p]);
+                            tri.push_back((uint32_t)raw[p + k]);
+                            tri.push_back((uint32_t)raw[p + k + 1]);
+                        }
+                        p += cnt;
+                    }
+                } else {
+                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
+                        tri.push_back((uint32_t)raw[k]);
+                        tri.push_back((uint32_t)raw[k+1]);
+                        tri.push_back((uint32_t)raw[k+2]);
+                    }
+                }
+                
+                size_t valid = 0;
+                for (size_t k = 0; k < tri.size(); k++) {
+                    if (tri[k] < (uint32_t)mesh.vertexCount) valid++;
+                    else break;
+                }
+                valid = (valid / 3) * 3;
+                tri.resize(valid);
+                
+                mesh.faceCount = (int)(tri.size() / 3);
+                mesh.indices = [NSMutableData dataWithBytes:tri.data() length:tri.size() * sizeof(uint32_t)];
+            }
+            
+            // UVs
+            for (size_t k = i + 5; k < tokens.size() && k < i + 40; k++) {
+                if (tokens[k].type == 1 && tokens[k].name == "MeshTextureCoords") {
+                    size_t m = k + 1;
+                    if (m < tokens.size() && tokens[m].type == 10) m++;
+                    if (m < tokens.size() && tokens[m].type == 6) m++;
+                    if (m < tokens.size() && tokens[m].type == 7) {
+                        const auto& uvs = tokens[m].floatList;
+                        if (uvs.size() >= (size_t)mesh.vertexCount * 2) {
+                            mesh.uvs = [NSMutableData dataWithBytes:uvs.data() length:mesh.vertexCount * 2 * 4];
+                        }
+                    }
+                    break;
+                }
+            }
+            
+            // Texture filename
+            for (size_t k = i + 5; k < tokens.size() && k < i + 100; k++) {
+                if (tokens[k].type == 1 && tokens[k].name == "TextureFilename") {
+                    if (k + 2 < tokens.size() && tokens[k+2].type == 2) {
+                        mesh.textureName = [NSString stringWithUTF8String:tokens[k+2].name.c_str()];
+                    }
+                    break;
+                }
+            }
+            
+            NSLog(@"[Santa] Mesh: %d v, %d f, tex=%@", mesh.vertexCount, mesh.faceCount, mesh.textureName ?: @"(none)");
+            return mesh;
+        }
+    }
+    
+    NSLog(@"[Santa] No Mesh found");
+    return nil;
+}
+
 @end
