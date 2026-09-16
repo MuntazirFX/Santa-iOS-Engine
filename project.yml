@@ -28,3 +28,4 @@ targets:
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
