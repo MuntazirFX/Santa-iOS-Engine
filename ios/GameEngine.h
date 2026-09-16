@@ -11,7 +11,7 @@
 @end
 
 @interface GameEngine : NSObject
-+ (NSString *)startEngine;
++ (NSData *)loadAssetNamed:(NSString *)name;
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset;
 + (NSString *)listAssetsByKeyword:(NSString *)keyword;
 + (NSString *)findAllMeshes;
