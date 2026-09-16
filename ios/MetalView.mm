@@ -91,12 +91,17 @@
     _frameCount++;
     if (_frameCount <= 3) NSLog(@"[MetalView] draw frame %d", _frameCount);
     
-// V coordinate flipped (TGA bottom-up hota hai)
+// Poora screen cover karne ke liye quad (2 triangles = 6 vertices)
     static const float vertices[] = {
+        // Triangle 1 (top-right half)
         // Position              UV
-         0.0,  0.8, 0.0, 1.0,    0.5, 1.0,   // Top (V flipped: 0.0 → 1.0)
-        -0.8, -0.8, 0.0, 1.0,    0.0, 0.0,   // Bottom-left (V flipped: 1.0 → 0.0)
-         0.8, -0.8, 0.0, 1.0,    1.0, 0.0,   // Bottom-right (V flipped: 1.0 → 0.0)
+        -1.0,  1.0, 0.0, 1.0,    0.0, 0.0,   // Top-left
+         1.0,  1.0, 0.0, 1.0,    1.0, 0.0,   // Top-right
+         1.0, -1.0, 0.0, 1.0,    1.0, 1.0,   // Bottom-right
+        // Triangle 2 (bottom-left half)
+        -1.0,  1.0, 0.0, 1.0,    0.0, 0.0,   // Top-left
+         1.0, -1.0, 0.0, 1.0,    1.0, 1.0,   // Bottom-right
+        -1.0, -1.0, 0.0, 1.0,    0.0, 1.0,   // Bottom-left
     };
     
     MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
