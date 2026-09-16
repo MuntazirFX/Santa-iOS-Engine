@@ -51,25 +51,30 @@
     if (offset >= xpkData.length) return @"Offset out of bounds";
     
     NSMutableString *output = [NSMutableString string];
-    [output appendFormat:@"=== .x at offset %lu ===\n", (unsigned long)offset];
+    [output appendFormat:@"=== .x at offset %lu ===\n\n", (unsigned long)offset];
     
-    // Decompress MSZip data (CK blocks start at byte 24)
+    // Decompress MSZip data (with debug log)
     std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
-    [output appendFormat:@"Decompressed size: %lu bytes\n", (unsigned long)decompressed.size()];
+    
+    // Show debug log on screen
+    std::string debugStr = xpkDebugLog();
+    [output appendString:[NSString stringWithUTF8String:debugStr.c_str()]];
+    [output appendString:@"\n"];
+    
+    [output appendFormat:@"\nDecompressed size: %lu bytes\n\n", (unsigned long)decompressed.size()];
     
     if (decompressed.size() < 16) {
         [output appendString:@"Decompression failed!\n"];
         return output;
     }
     
-    // Print first 64 bytes as Hex
-    [output appendString:@"\nFirst 64 bytes:\n"];
+    // Print first 64 bytes
+    [output appendString:@"First 64 bytes of result:\n"];
     for (int i = 0; i < 64 && i < (int)decompressed.size(); i++) {
         [output appendFormat:@"%02x ", decompressed[i]];
         if ((i+1) % 16 == 0) [output appendString:@"\n"];
     }
     
-    // Print ASCII
     [output appendString:@"\nASCII: "];
     for (int i = 0; i < 64 && i < (int)decompressed.size(); i++) {
         char c = (char)decompressed[i];
