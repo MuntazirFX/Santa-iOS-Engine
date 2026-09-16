@@ -50,12 +50,13 @@
         if (!_pipelineState) {
             NSLog(@"[MetalView] Pipeline failed: %@", error);
         } else {
-            NSLog(@"[MetalView] Pipeline ready with texture!");
+            NSLog(@"[MetalView] Pipeline ready!");
         }
     }
     return self;
 }
- - (void)createTexture {
+
+- (void)createTexture {
     // 3D model file (.x) load karke hex dump karein
     NSData *xData = [GameEngine loadAssetNamed:@"gfx\\schneemann_000.x"];
     if (!xData || xData.length == 0) {
@@ -86,7 +87,6 @@
     }
     NSLog(@"[MetalView] ASCII: %@", ascii);
 }
-}
 
 - (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
 
@@ -96,7 +96,7 @@
     _frameCount++;
     if (_frameCount <= 3) NSLog(@"[MetalView] draw frame %d", _frameCount);
     
-// Poora screen cover karne ke liye quad (2 triangles = 6 vertices)
+    // Poora screen cover karne ke liye quad (2 triangles = 6 vertices)
     static const float vertices[] = {
         // Triangle 1 (top-right half)
         // Position              UV
@@ -117,7 +117,9 @@
     
     [enc setRenderPipelineState:_pipelineState];
     [enc setVertexBytes:vertices length:sizeof(vertices) atIndex:0];
-    [enc setFragmentTexture:_texture atIndex:0];
+    if (_texture) {
+        [enc setFragmentTexture:_texture atIndex:0];
+    }
     [enc setFragmentSamplerState:_sampler atIndex:0];
     [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6];
     [enc endEncoding];
