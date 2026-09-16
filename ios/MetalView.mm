@@ -1,27 +1,21 @@
 #import "MetalView.h"
+#import "GameEngine.h"
 #import <Metal/Metal.h>
-#import <simd/simd.h>
 
 @implementation MetalView {
     id<MTLDevice> _device;
     id<MTLCommandQueue> _commandQueue;
     id<MTLRenderPipelineState> _pipelineState;
+    id<MTLTexture> _texture;
+    id<MTLSamplerState> _sampler;
     int _frameCount;
 }
 
 - (instancetype)initWithFrame:(CGRect)frame {
-    NSLog(@"[MetalView] init with frame: %.0fx%.0f", frame.size.width, frame.size.height);
-    
     _device = MTLCreateSystemDefaultDevice();
-    if (!_device) {
-        NSLog(@"[MetalView] ERROR: No Metal device!");
-        return nil;
-    }
-    NSLog(@"[MetalView] Device: %@", _device.name);
-    
     self = [super initWithFrame:frame device:_device];
     if (self) {
-        self.clearColor = MTLClearColorMake(0.2, 0.2, 0.5, 1.0); // Brighter blue for visibility
+        self.clearColor = MTLClearColorMake(0.1, 0.1, 0.2, 1.0);
         self.colorPixelFormat = MTLPixelFormatBGRA8Unorm;
         self.preferredFramesPerSecond = 60;
         self.delegate = self;
@@ -31,74 +25,95 @@
         _frameCount = 0;
         _commandQueue = [_device newCommandQueue];
         
-        // Shader library load karein
-        id<MTLLibrary> library = [_device newDefaultLibrary];
-        if (!library) {
-            NSLog(@"[MetalView] ERROR: newDefaultLibrary returned nil!");
-            return self;
-        }
-        NSLog(@"[MetalView] Library loaded. Functions: %@", [library functionNames]);
+        [self createTexture];
         
+        // Sampler
+        MTLSamplerDescriptor *sampDesc = [[MTLSamplerDescriptor alloc] init];
+        sampDesc.minFilter = MTLSamplerMinMagFilterNearest;
+        sampDesc.magFilter = MTLSamplerMinMagFilterNearest;
+        sampDesc.sAddressMode = MTLSamplerAddressModeClampToEdge;
+        sampDesc.tAddressMode = MTLSamplerAddressModeClampToEdge;
+        _sampler = [_device newSamplerStateWithDescriptor:sampDesc];
+        
+        // Pipeline
+        id<MTLLibrary> library = [_device newDefaultLibrary];
         id<MTLFunction> vertexFunction = [library newFunctionWithName:@"vertex_main"];
         id<MTLFunction> fragmentFunction = [library newFunctionWithName:@"fragment_main"];
         
-        if (!vertexFunction) {
-            NSLog(@"[MetalView] ERROR: vertex_main not found!");
-            return self;
-        }
-        if (!fragmentFunction) {
-            NSLog(@"[MetalView] ERROR: fragment_main not found!");
-            return self;
-        }
-        NSLog(@"[MetalView] Both shader functions found!");
-        
-        MTLRenderPipelineDescriptor *pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
-        pipelineDescriptor.vertexFunction = vertexFunction;
-        pipelineDescriptor.fragmentFunction = fragmentFunction;
-        pipelineDescriptor.colorAttachments[0].pixelFormat = self.colorPixelFormat;
+        MTLRenderPipelineDescriptor *desc = [[MTLRenderPipelineDescriptor alloc] init];
+        desc.vertexFunction = vertexFunction;
+        desc.fragmentFunction = fragmentFunction;
+        desc.colorAttachments[0].pixelFormat = self.colorPixelFormat;
         
         NSError *error = nil;
-        _pipelineState = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
+        _pipelineState = [_device newRenderPipelineStateWithDescriptor:desc error:&error];
         if (!_pipelineState) {
-            NSLog(@"[MetalView] ERROR: Pipeline failed: %@", error);
+            NSLog(@"[MetalView] Pipeline failed: %@", error);
         } else {
-            NSLog(@"[MetalView] Pipeline created successfully!");
+            NSLog(@"[MetalView] Pipeline ready with texture!");
         }
     }
     return self;
 }
 
-- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {
-    NSLog(@"[MetalView] Drawable size changed: %.0fx%.0f", size.width, size.height);
+- (void)createTexture {
+    NSData *tgaData = [GameEngine loadTGATextureData];
+    if (!tgaData || tgaData.length == 0) {
+        NSLog(@"[MetalView] Failed to load TGA data!");
+        return;
+    }
+    
+    uint16_t width = 64;
+    uint16_t height = 64;
+    
+    MTLTextureDescriptor *texDesc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:width height:height mipmapped:NO];
+    texDesc.usage = MTLTextureUsageShaderRead;
+    
+    _texture = [_device newTextureWithDescriptor:texDesc];
+    if (!_texture) {
+        NSLog(@"[MetalView] Failed to create MTLTexture!");
+        return;
+    }
+    
+    [_texture replaceRegion:MTLRegionMake2D(0, 0, width, height)
+                mipmapLevel:0
+                  withBytes:tgaData.bytes
+                bytesPerRow:width * 4];
+    
+    NSLog(@"[MetalView] Texture created: %dx%d", width, height);
 }
+
+- (void)mtkView:(MTKView *)view drawableSizeWillChange:(CGSize)size {}
 
 - (void)drawInMTKView:(MTKView *)view {
     if (!_pipelineState) return;
     
     _frameCount++;
-    if (_frameCount <= 3) {
-        NSLog(@"[MetalView] drawInMTKView called (frame %d)", _frameCount);
-    }
+    if (_frameCount <= 3) NSLog(@"[MetalView] draw frame %d", _frameCount);
     
+    // Vertex data: X, Y, Z, W, U, V (6 floats per vertex)
     static const float vertices[] = {
-         0.0,  0.8, 0.0, 1.0,       1.0, 0.0, 0.0, 1.0,
-        -0.8, -0.8, 0.0, 1.0,       0.0, 1.0, 0.0, 1.0,
-         0.8, -0.8, 0.0, 1.0,       0.0, 0.0, 1.0, 1.0,
+        // Position              UV
+         0.0,  0.8, 0.0, 1.0,    0.5, 0.0,   // Top
+        -0.8, -0.8, 0.0, 1.0,    0.0, 1.0,   // Bottom-left
+         0.8, -0.8, 0.0, 1.0,    1.0, 1.0,   // Bottom-right
     };
     
-    MTLRenderPassDescriptor *renderPassDescriptor = view.currentRenderPassDescriptor;
-    if (renderPassDescriptor == nil) return;
+    MTLRenderPassDescriptor *rpd = view.currentRenderPassDescriptor;
+    if (!rpd) return;
     
-    id<MTLCommandBuffer> commandBuffer = [_commandQueue commandBuffer];
-    id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:renderPassDescriptor];
+    id<MTLCommandBuffer> cmdBuf = [_commandQueue commandBuffer];
+    id<MTLRenderCommandEncoder> enc = [cmdBuf renderCommandEncoderWithDescriptor:rpd];
     
-    [encoder setRenderPipelineState:_pipelineState];
-    [encoder setVertexBytes:vertices length:sizeof(vertices) atIndex:0];
-    [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
-    [encoder endEncoding];
+    [enc setRenderPipelineState:_pipelineState];
+    [enc setVertexBytes:vertices length:sizeof(vertices) atIndex:0];
+    [enc setFragmentTexture:_texture atIndex:0];
+    [enc setFragmentSamplerState:_sampler atIndex:0];
+    [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [enc endEncoding];
     
-    [commandBuffer presentDrawable:view.currentDrawable];
-    [commandBuffer commit];
+    [cmdBuf presentDrawable:view.currentDrawable];
+    [cmdBuf commit];
 }
 
 @end
