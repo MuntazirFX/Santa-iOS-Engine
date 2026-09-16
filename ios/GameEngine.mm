@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <algorithm>
 
 @implementation MeshData
 @end
@@ -87,16 +88,38 @@
     return output;
 }
 
-+ (MeshData *)extractFirstMeshAtOffset:(NSUInteger)offset {
+// ============ NEW: Extract mesh from named asset ============
++ (MeshData *)extractMeshFromAssetNamed:(NSString *)assetName {
     NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
-    if (!xpkData) return nil;
+    if (!xpkPath) return nil;
     
-    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
-    std::vector<uint8_t> data = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
-    if (data.size() < 16) return nil;
+    std::string xpkPathStd = [xpkPath UTF8String];
+    AssetManager assetMgr;
+    if (!assetMgr.loadXPK(xpkPathStd)) {
+        NSLog(@"[Mesh] XPK load failed");
+        return nil;
+    }
     
-    std::vector<XToken> tokens = XFileParser::parseTokens(data.data(), data.size(), 2000);
+    std::string targetName = [assetName UTF8String];
+    std::vector<uint8_t> data = assetMgr.getAssetData(targetName);
+    
+    if (data.empty()) {
+        NSLog(@"[Mesh] Asset not found: %@", assetName);
+        return nil;
+    }
+    
+    NSLog(@"[Mesh] %@: %lu bytes compressed", assetName, (unsigned long)data.size());
+    
+    std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(data.data(), data.size());
+    if (decompressed.size() < 16) {
+        NSLog(@"[Mesh] Decompression failed");
+        return nil;
+    }
+    
+    NSLog(@"[Mesh] Decompressed: %lu bytes", (unsigned long)decompressed.size());
+    
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 3000);
+    NSLog(@"[Mesh] %@ tokens: %lu", assetName, (unsigned long)tokens.size());
     
     for (size_t i = 0; i < tokens.size(); i++) {
         if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
@@ -176,87 +199,14 @@
                 }
             }
             
+            NSLog(@"[Mesh] Extracted: %d verts, %d faces, tex=%@",
+                  mesh.vertexCount, mesh.faceCount, mesh.textureName ?: @"(none)");
             return mesh;
         }
     }
+    
+    NSLog(@"[Mesh] No Mesh template found in %@", assetName);
     return nil;
-}
-
-+ (NSString *)scanXPKForDDS {
-    NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    NSData *xpkData = [NSData dataWithContentsOfFile:resourcePath];
-    if (!xpkData) return @"No XPK data";
-    
-    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
-    size_t totalSize = xpkData.length;
-    
-    NSMutableString *out = [NSMutableString string];
-    [out appendFormat:@"XPK size: %lu bytes\n\n", (unsigned long)totalSize];
-    
-    int found = 0;
-    for (size_t i = 0; i < totalSize - 128; i++) {
-        // Check for "DDS " magic (0x44 0x44 0x53 0x20)
-        if (bytes[i] == 0x44 && bytes[i+1] == 0x44 && bytes[i+2] == 0x53 && bytes[i+3] == 0x20) {
-            
-            // Read DDS header at this offset
-            uint32_t height = *(uint32_t *)(bytes + i + 12);
-            uint32_t width = *(uint32_t *)(bytes + i + 16);
-            uint32_t fourCC = *(uint32_t *)(bytes + i + 84);
-            uint32_t bitCount = *(uint32_t *)(bytes + i + 88);
-            
-            // Sanity check
-            if (width > 0 && width <= 4096 && height > 0 && height <= 4096) {
-                [out appendFormat:@"@%zu: %ux%u fourCC=0x%x bitCount=%u\n",
-                 i, width, height, fourCC, bitCount];
-                found++;
-                if (found >= 15) break;
-            }
-        }
-    }
-    
-    if (found == 0) {
-        [out appendString:@"No valid DDS signatures found!\n"];
-    } else {
-        [out appendFormat:@"\nTotal: %d DDS files found\n", found];
-    }
-    return out;
-}
-
-+ (NSData *)loadDDSAtOffset:(NSUInteger)offset {
-    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
-    if (!xpkData || offset >= xpkData.length) return nil;
-    
-    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
-    
-    // Read DDS header to calculate total size
-    // DDS header is 128 bytes, then pixel data
-    uint32_t height = *(uint32_t *)(bytes + offset + 12);
-    uint32_t width = *(uint32_t *)(bytes + offset + 16);
-    uint32_t mipCount = *(uint32_t *)(bytes + offset + 28);
-    uint32_t bitCount = *(uint32_t *)(bytes + offset + 88);
-    
-    if (width == 0 || height == 0 || (bitCount != 16 && bitCount != 24 && bitCount != 32)) return nil;
-    
-    // For uncompressed, pixel data size = width * height * (bitCount / 8)
-    // Plus mipmaps (if any)
-    size_t pixelsPerByte = bitCount / 8;
-    size_t totalSize = 128; // header
-    size_t mipW = width, mipH = height;
-    for (uint32_t m = 0; m < mipCount && m < 16; m++) {
-        totalSize += mipW * mipH * pixelsPerByte;
-        mipW = mipW / 2; if (mipW == 0) mipW = 1;
-        mipH = mipH / 2; if (mipH == 0) mipH = 1;
-    }
-    
-    // Sanity check
-    if (offset + totalSize > xpkData.length) {
-        // Fallback: just read the first mip
-        totalSize = 128 + (width * height * pixelsPerByte);
-        if (offset + totalSize > xpkData.length) return nil;
-    }
-    
-    return [NSData dataWithBytes:(bytes + offset) length:totalSize];
 }
 
 @end
