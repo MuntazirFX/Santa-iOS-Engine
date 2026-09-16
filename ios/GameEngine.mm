@@ -38,27 +38,6 @@
     return [NSData dataWithBytes:data.data() length:data.size()];
 }
 
-+ (NSString *)parseXFileAtOffset:(NSUInteger)offset maxTokens:(int)maxTokens {
-    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
-    if (!xpkData) return @"No XPK data";
-    
-    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
-    std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
-    
-    if (decompressed.size() < 16) return @"Decompression failed";
-    
-    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), maxTokens);
-    
-    NSMutableString *output = [NSMutableString string];
-    [output appendFormat:@"Tokens (%lu):\n", (unsigned long)tokens.size()];
-    for (const auto& token : tokens) {
-        std::string desc = XFileParser::describeToken(token);
-        [output appendFormat:@"%s\n", desc.c_str()];
-    }
-    return output;
-}
-
 + (MeshData *)extractFirstMeshAtOffset:(NSUInteger)offset {
     NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
@@ -69,46 +48,41 @@
     
     if (data.size() < 16) return nil;
     
-    // Simple scan: find "Mesh\0" pattern
-    size_t meshPos = 0;
-    for (size_t i = 0; i < data.size() - 4; i++) {
-        if (data[i] == 'M' && data[i+1] == 'e' && data[i+2] == 's' && data[i+3] == 'h' && data[i+4] == 0) {
-            meshPos = i;
-            break;
+    // Parse all tokens
+    std::vector<XToken> tokens = XFileParser::parseTokens(data.data(), data.size(), 2000);
+    NSLog(@"[Mesh] Total tokens: %lu", (unsigned long)tokens.size());
+    
+    // Walk through tokens to find "Mesh" NAME
+    for (size_t i = 0; i < tokens.size(); i++) {
+        if (tokens[i].type == 1 && tokens[i].name == "Mesh") {
+            NSLog(@"[Mesh] Found 'Mesh' at token %zu", i);
+            
+            size_t j = i + 1;
+            if (j < tokens.size() && tokens[j].type == 10) j++; // skip {
+            
+            if (j < tokens.size() && tokens[j].type == 6) j++; // skip ILIST
+            
+            if (j < tokens.size() && tokens[j].type == 7) {
+                const auto& verts = tokens[j].floatList;
+                NSLog(@"[Mesh] Vertices: %zu floats", verts.size());
+                
+                if (verts.size() >= 3) {
+                    MeshData *mesh = [[MeshData alloc] init];
+                    mesh.vertexCount = (int)(verts.size() / 3);
+                    mesh.vertices = [NSMutableData dataWithBytes:verts.data() length:verts.size() * 4];
+                    
+                    j++;
+                    if (j < tokens.size() && tokens[j].type == 6) {
+                        mesh.faceCount = (int)(tokens[j].intList.size() / 3);
+                    }
+                    return mesh;
+                }
+            }
         }
     }
     
-    if (meshPos == 0) return nil;
-    
-    // Skip past "Mesh" name, opening brace, material ILIST, then find FLIST
-    // This is a simplified parser — assumes first FLIST after "Mesh" is vertices
-    size_t scanPos = meshPos + 5;
-    size_t flistPos = 0;
-    size_t ilistPos = 0;
-    
-    // Find first ILIST (material index) then FLIST (vertices)
-    int listCount = 0;
-    for (size_t i = scanPos; i < data.size() - 2; i++) {
-        uint16_t t = data[i] | (data[i+1] << 8);
-        if (t == 6 && listCount == 0) { // First ILIST
-            listCount = 1;
-        } else if (t == 7 && listCount == 1) { // FLIST (vertices)
-            flistPos = i + 2;
-            break;
-        }
-    }
-    
-    if (flistPos == 0) return nil;
-    
-    // Read vertex count and data
-    uint32_t vCount = data[flistPos] | (data[flistPos+1] << 8) | (data[flistPos+2] << 16) | (data[flistPos+3] << 24);
-    size_t vStart = flistPos + 4;
-    
-    MeshData *mesh = [[MeshData alloc] init];
-    mesh.vertexCount = vCount / 3;
-    mesh.vertices = [NSMutableData dataWithBytes:(data.data() + vStart) length:vCount * 4];
-    
-    return mesh;
+    NSLog(@"[Mesh] Not found");
+    return nil;
 }
 
 @end
