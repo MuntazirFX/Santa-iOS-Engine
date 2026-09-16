@@ -1,5 +1,6 @@
 #import "AppDelegate.h"
 #import "GameEngine.h"
+#import "MetalView.h"
 
 @implementation AppDelegate
 
@@ -9,16 +10,32 @@
     UIViewController *vc = [[UIViewController alloc] init];
     vc.view.backgroundColor = [UIColor blackColor];
     
-    UITextView *tv = [[UITextView alloc] initWithFrame:vc.view.bounds];
-    tv.backgroundColor = [UIColor blackColor];
+    MetalView *mv = [[MetalView alloc] initWithFrame:vc.view.bounds];
+    mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [vc.view addSubview:mv];
+    
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 100)];
+    tv.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
     tv.textColor = [UIColor greenColor];
-    tv.font = [UIFont fontWithName:@"Courier" size:9];
+    tv.font = [UIFont fontWithName:@"Courier" size:10];
     tv.editable = NO;
+    tv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [vc.view addSubview:tv];
     
     NSMutableString *log = [NSMutableString string];
-    [log appendString:@"=== Finding Santa (big meshes) ===\n\n"];
-    [log appendString:[GameEngine findAllMeshes]];
+    
+    // Try @171669 (704 verts, 869 faces) - likely Santa
+    MeshData *mesh = [GameEngine extractMeshAtOffset:171669];
+    
+    if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
+        [log appendFormat:@"Model @171669\n"];
+        [log appendFormat:@"%d verts, %d faces\n", mesh.vertexCount, mesh.faceCount];
+        [log appendFormat:@"Tex: %@\n\n", mesh.textureName ?: @"(none)"];
+        [mv setMeshToRender:mesh];
+        [log appendString:mv.textureDebugInfo];
+    } else {
+        [log appendString:@"Extraction failed!\n"];
+    }
     
     tv.text = log;
     
