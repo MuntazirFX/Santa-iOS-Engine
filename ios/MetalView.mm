@@ -38,8 +38,8 @@
         _commandQueue = [_device newCommandQueue];
         
         MTLSamplerDescriptor *sd = [[MTLSamplerDescriptor alloc] init];
-        sd.minFilter = MTLSamplerMinFilterLinear;
-        sd.magFilter = MTLSamplerMinFilterLinear;
+        sd.minFilter = MTLSamplerMinMagFilterLinear;
+        sd.magFilter = MTLSamplerMinMagFilterLinear;
         sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
         sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
         _sampler = [_device newSamplerStateWithDescriptor:sd];
