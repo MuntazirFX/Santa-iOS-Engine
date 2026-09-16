@@ -17,25 +17,31 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
     std::vector<uint8_t> output;
     if (size < 30) return output;
     
-    // CK blocks start at byte 24 (16 header + 8 unknown)
-    size_t offset = 24;
+    // Scan for CK blocks starting from byte 16
+    size_t offset = 16;
     
     while (offset + 6 <= size) {
-        // Check CK signature
-        if (data[offset] != 0x43 || data[offset + 1] != 0x4B) break;
-        offset += 2;
+        // Skip bytes until we find CK marker
+        while (offset + 1 < size && !(data[offset] == 0x43 && data[offset+1] == 0x4B)) {
+            offset++;
+        }
+        if (offset + 6 > size) break;
         
+        offset += 2; // skip "CK"
         uint16_t compSize = readU16(data, offset); offset += 2;
         uint16_t uncompSize = readU16(data, offset); offset += 2;
         
-        if (compSize == 0 || offset + compSize > size) break;
+        if (compSize <= 6 || uncompSize == 0) break;
+        if (offset + compSize - 6 > size) break;
         
-        // Decompress raw DEFLATE stream
+        // MSZip: compSize INCLUDES 6-byte header, so actual data = compSize - 6
+        size_t dataSize = compSize - 6;
+        
         uint8_t* outBuf = new uint8_t[uncompSize];
         z_stream strm;
         memset(&strm, 0, sizeof(strm));
         strm.next_in = (Bytef*)(data + offset);
-        strm.avail_in = compSize;
+        strm.avail_in = (uInt)dataSize;
         strm.next_out = outBuf;
         strm.avail_out = uncompSize;
         
@@ -47,7 +53,9 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
             }
         }
         delete[] outBuf;
-        offset += compSize;
+        
+        // Move to next CK block
+        offset += dataSize;
     }
     return output;
 }
