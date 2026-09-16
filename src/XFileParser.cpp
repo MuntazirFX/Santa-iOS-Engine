@@ -12,21 +12,23 @@ static uint16_t readU16(const uint8_t* data, size_t offset) {
 }
 
 // MSZip decompression (bzip format)
+// Format: 16-byte header + 8-byte unknown + CK blocks
 std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t size) {
     std::vector<uint8_t> output;
-    size_t offset = 16; // Skip "xof 0303bzip 0032" header
+    if (size < 30) return output;
+    
+    // CK blocks start at byte 24 (16 header + 8 unknown)
+    size_t offset = 24;
     
     while (offset + 6 <= size) {
         // Check CK signature
         if (data[offset] != 0x43 || data[offset + 1] != 0x4B) break;
         offset += 2;
         
-        uint16_t compSize = readU16(data, offset);
-        offset += 2;
-        uint16_t uncompSize = readU16(data, offset);
-        offset += 2;
+        uint16_t compSize = readU16(data, offset); offset += 2;
+        uint16_t uncompSize = readU16(data, offset); offset += 2;
         
-        if (offset + compSize > size) break;
+        if (compSize == 0 || offset + compSize > size) break;
         
         // Decompress raw DEFLATE stream
         uint8_t* outBuf = new uint8_t[uncompSize];
@@ -38,9 +40,11 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
         strm.avail_out = uncompSize;
         
         if (inflateInit2(&strm, -MAX_WBITS) == Z_OK) {
-            inflate(&strm, Z_FINISH);
+            int ret = inflate(&strm, Z_FINISH);
             inflateEnd(&strm);
-            output.insert(output.end(), outBuf, outBuf + uncompSize);
+            if (ret == Z_STREAM_END) {
+                output.insert(output.end(), outBuf, outBuf + uncompSize);
+            }
         }
         delete[] outBuf;
         offset += compSize;
@@ -51,7 +55,7 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
 std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, int maxTokens) {
     std::vector<XToken> tokens;
     if (size < 16) return tokens;
-    size_t offset = 16;  // Skip "xof 0303binn\0" / "xof 0303txt \0"
+    size_t offset = 16;
     
     while (offset < size && (int)tokens.size() < maxTokens) {
         uint16_t tokenType = readU16(data, offset);
@@ -82,8 +86,8 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 break;
             }
             case 3: token.intValue = (int)readU32(data, offset); offset += 4; break;
-            case 5: offset += 16; break; // GUID
-            case 6: { // INTEGER_LIST
+            case 5: offset += 16; break;
+            case 6: {
                 uint32_t count = readU32(data, offset);
                 offset += 4;
                 if (count > 100000) { offset = size; break; }
@@ -93,7 +97,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             }
-            case 7: { // FLOAT_LIST
+            case 7: {
                 uint32_t count = readU32(data, offset);
                 offset += 4;
                 if (count > 100000) { offset = size; break; }
@@ -118,7 +122,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 offset += 4;
                 break;
             }
-            case 43: offset += 8; break; // DOUBLE
+            case 43: offset += 8; break;
             case 44: case 45: offset += 1; break;
             case 46: offset += 2; break;
             case 47: offset += 4; break;
