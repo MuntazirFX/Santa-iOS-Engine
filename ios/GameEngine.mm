@@ -38,7 +38,6 @@
     return [NSData dataWithBytes:data.data() length:data.size()];
 }
 
-// List all assets matching a keyword (case-insensitive)
 + (NSString *)listAssetsByKeyword:(NSString *)keyword {
     NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!resourcePath) return @"No XPK";
