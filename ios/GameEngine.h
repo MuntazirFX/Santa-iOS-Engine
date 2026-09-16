@@ -5,6 +5,8 @@
 @property (nonatomic) int faceCount;
 @property (strong, nonatomic) NSMutableData *vertices;
 @property (strong, nonatomic) NSMutableData *indices;
+@property (strong, nonatomic) NSMutableData *uvs;
+@property (strong, nonatomic) NSString *textureName;
 @end
 
 @interface GameEngine : NSObject
