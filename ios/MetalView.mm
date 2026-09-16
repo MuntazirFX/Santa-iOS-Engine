@@ -294,14 +294,38 @@
     }
     [dbg appendFormat:@"basename: %@\n", basename];
     
-    NSString *ddsPath = [NSString stringWithFormat:@"maps\\%@.dds", basename];
-    _texture = [self loadDDSTextureNamed:ddsPath debugOut:dbg];
+    // DDS offsets jo humne XPK scan se dhoonde the (uncompressed, valid dims)
+    NSArray *ddsOffsets = @[
+        @1578864,  // 128x128 16-bit
+        @5659034,  // 256x256 16-bit
+        @5833924,  // 256x256 16-bit
+        @6030704,  // 256x256 16-bit
+        @6467782,  // 256x256 16-bit
+        @4419012,  // 512x512 16-bit
+        @5118190,  // 512x512 16-bit
+        @8253169,  // 512x512 16-bit
+        @8777585,  // 512x512 16-bit
+        @9476763,  // 512x512 16-bit
+    ];
     
-    if (!_texture) {
-        NSString *tgaPath = [NSString stringWithFormat:@"maps\\%@.tga", basename];
-        [dbg appendFormat:@"Trying TGA: %@\n", tgaPath];
-        _texture = [self loadTGATextureNamed:tgaPath];
-        if (_texture) [dbg appendString:@"✓ TGA loaded\n"];
+    for (NSNumber *off in ddsOffsets) {
+        NSData *ddsData = [GameEngine loadDDSAtOffset:[off unsignedIntegerValue]];
+        if (!ddsData) continue;
+        
+        const uint8_t *b = (const uint8_t *)ddsData.bytes;
+        if (b[0] != 'D' || b[1] != 'D' || b[2] != 'S' || b[3] != ' ') continue;
+        
+        uint32_t w = *(uint32_t *)(b + 16);
+        uint32_t h = *(uint32_t *)(b + 12);
+        [dbg appendFormat:@"Trying offset %@: %ux%u\n", off, w, h];
+        
+        // Manually create texture from this data
+        id<MTLTexture> tex = [self createTextureFromDDSData:ddsData debug:dbg];
+        if (tex) {
+            _texture = tex;
+            [dbg appendFormat:@"  ✓ Loaded via offset %@\n", off];
+            break;
+        }
     }
     
     if (!_texture) {
