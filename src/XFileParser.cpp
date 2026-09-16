@@ -35,8 +35,8 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
         
         size_t ckPos = offset;
         size_t startOffset = ckPos + 2;
-        
         uint16_t uncompSize = readU16(data, ckPos + 4);
+        
         if (uncompSize == 0 || uncompSize > 60000) {
             offset = ckPos + 2;
             blockNum++;
@@ -72,7 +72,6 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
         } else {
             delete[] outBuf;
         }
-        
         offset = ckPos + 2;
         blockNum++;
     }
@@ -80,7 +79,6 @@ std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t si
     snprintf(buf, sizeof(buf), "Total decompressed: %lu bytes across %d blocks\n",
              (unsigned long)output.size(), blockNum);
     xpkDebugLog() += buf;
-    
     return output;
 }
 
@@ -132,7 +130,8 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
             }
             case 3:
                 if (offset + 4 > size) { offset = size; break; }
-                token.intValue = (int)readU32(data, offset); offset += 4;
+                token.intValue = (int)readU32(data, offset);
+                offset += 4;
                 break;
             case 5:
                 if (offset + 16 > size) { offset = size; break; }
@@ -216,7 +215,6 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             case 48: case 49: case 50:
-                // LPSTR, UNICODE, CSTRING — string data
                 if (templateDepth == 0) {
                     if (offset + 4 > size) { offset = size; break; }
                     uint32_t len = readU32(data, offset);
@@ -225,10 +223,8 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                     offset += len;
                 }
                 break;
-            case 51:
-                break;
-            default:
-                break;
+            case 51: break;
+            default: break;
         }
         tokens.push_back(token);
     }
@@ -239,8 +235,8 @@ std::string XFileParser::describeToken(const XToken& token) {
     std::ostringstream oss;
     switch (token.type) {
         case 1: oss << "NAME: \"" << token.name << "\""; break;
-        case 2: oss << "STR:  \"" << token.name << "\""; break;
-        case 3: oss << "INT:  " << token.intValue; break;
+        case 2: oss << "STR: \"" << token.name << "\""; break;
+        case 3: oss << "INT: " << token.intValue; break;
         case 5: oss << "GUID"; break;
         case 6: oss << "ILIST(" << token.intList.size() << ")"; break;
         case 7: oss << "FLIST(" << token.floatList.size() << ")"; break;
