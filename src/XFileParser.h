@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+std::string& xpkDebugLog();
+
 struct XToken {
     int type;
     std::string name;
