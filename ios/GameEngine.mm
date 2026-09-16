@@ -1,5 +1,6 @@
 #import "GameEngine.h"
 #include "AssetManager.h"
+#include "XFileParser.h"
 #include <string>
 #include <vector>
 #include <fstream>
@@ -19,15 +20,13 @@
     std::string xpkPath = [resourcePath UTF8String];
     AssetManager assetMgr;
     if (assetMgr.loadXPK(xpkPath)) {
-        [status appendString:@"XPK Loaded Successfully!\n"];
-        [status appendString:@"177 files ready in memory."];
+        [status appendString:@"XPK Loaded!\n"];
     } else {
-        [status appendString:@"ERROR: XPK failed!"];
+        [status appendString:@"XPK failed!"];
     }
     return status;
 }
 
-// Kisi bhi asset ko XPK se load karein
 + (NSData *)loadAssetNamed:(NSString *)name {
     NSString *resourcePath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!resourcePath) return nil;
@@ -41,6 +40,39 @@
     
     if (data.empty()) return nil;
     return [NSData dataWithBytes:data.data() length:data.size()];
+}
+
++ (NSString *)parseXFileAtOffset:(NSUInteger)offset maxTokens:(int)maxTokens {
+    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
+    if (!xpkData) return @"No XPK data";
+    
+    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
+    if (offset >= xpkData.length) return @"Offset out of bounds";
+    
+    // Header check
+    NSMutableString *output = [NSMutableString string];
+    [output appendFormat:@"=== .x file at offset %lu ===\n", (unsigned long)offset];
+    
+    // Print header (16 bytes)
+    [output appendString:@"Header: "];
+    for (int i = 0; i < 16 && offset + i < xpkData.length; i++) {
+        char c = (char)bytes[offset + i];
+        if (c >= 32 && c < 127) [output appendFormat:@"%c", c];
+        else [output appendString:@"."];
+    }
+    [output appendString:@"\n\n"];
+    
+    // Parse tokens
+    std::vector<XToken> tokens = XFileParser::parseTokens(bytes + offset, xpkData.length - offset, maxTokens);
+    
+    [output appendFormat:@"Tokens (%lu):\n", (unsigned long)tokens.size()];
+    for (const auto& token : tokens) {
+        std::string desc = XFileParser::describeToken(token);
+        [output appendFormat:@"%s\n", desc.c_str()];
+    }
+    
+    return output;
 }
 
 @end
