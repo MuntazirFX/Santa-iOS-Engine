@@ -11,13 +11,17 @@
     NSString *engineStatus = [GameEngine startEngine];
     NSLog(@"%@", engineStatus);
     
-    // Metal view banayein aur screen par dikhayein
-    MetalView *metalView = [[MetalView alloc] initWithFrame:self.window.bounds];
+    // Base view controller banayein
     UIViewController *viewController = [[UIViewController alloc] init];
-    viewController.view = metalView;
+    viewController.view.backgroundColor = [UIColor blackColor];
+    
+    // Metal view ko addSubview ke zariye add karein
+    MetalView *metalView = [[MetalView alloc] initWithFrame:viewController.view.bounds];
+    metalView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [viewController.view addSubview:metalView];
     
     // Status label upar add karein
-    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 50, self.window.bounds.size.width, 100)];
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(0, 50, viewController.view.bounds.size.width, 100)];
     label.text = engineStatus;
     label.numberOfLines = 0;
     label.textColor = [UIColor whiteColor];
