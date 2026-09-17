@@ -18,7 +18,7 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
-    // Row-major read (matches 3:11 working state)
+    // Row-major read
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
         for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
@@ -120,7 +120,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // FrameTransformMatrix — read 16 floats, swap multiply order
+        // FrameTransformMatrix
         if (tok.type == 1 && tok.name == "FrameTransformMatrix") {
             for (size_t j = i + 1; j < std::min(tokens.size(), i + 6); j++) {
                 if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
@@ -133,7 +133,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // Texture filename (first one wins)
+        // Texture filename
         if (tok.type == 1 && tok.name == "TextureFilename" && foundTexture.empty()) {
             for (size_t j = i + 1; j < std::min(tokens.size(), i + 5); j++) {
                 if (tokens[j].type == 2 && !tokens[j].name.empty()) {
@@ -222,14 +222,14 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 }
                 
                 meshCount++;
-NSLog(@"[Santa] Mesh %d: %d v (total %d v, %d idx)",
-      meshCount, vc, (int)(allVerts.size()/3), (int)allIdx.size());
-
-// Sirf PEHLA mesh lein
-if (meshCount >= 1) {
-    NSLog(@"[Santa] Stopping after first mesh");
-    break;
-}
+                NSLog(@"[Santa] Mesh %d: %d v (total %d v, %d idx)",
+                      meshCount, vc, (int)(allVerts.size()/3), (int)allIdx.size());
+                
+                if (meshCount >= 1) {
+                    NSLog(@"[Santa] Stopping after first mesh");
+                    break;
+                }
+            }
         }
     }
     
