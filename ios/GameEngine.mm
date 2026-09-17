@@ -18,7 +18,6 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
-    // Row-major read
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
         for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
@@ -88,6 +87,11 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     std::vector<uint32_t> allIdx;
     std::string foundTexture;
     int meshCount = 0;
+    int meshesIncluded = 0;
+    int meshesSkipped = 0;
+    
+    // Track the CURRENT texture — updated whenever we see TextureFilename
+    std::string currentTexture = "";
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
@@ -133,23 +137,26 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // Texture filename — ONLY accept Santa textures
+        // Texture filename — update CURRENT texture (for filtering meshes)
         if (tok.type == 1 && tok.name == "TextureFilename") {
             for (size_t j = i + 1; j < std::min(tokens.size(), i + 5); j++) {
                 if (tokens[j].type == 2 && !tokens[j].name.empty()) {
-                    std::string fn = tokens[j].name;
-                    std::string lower = fn;
-                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    currentTexture = tokens[j].name;
                     
-                    // ONLY Santa-related textures
+                    // Also try to capture a Santa-specific texture for later
+                    std::string lower = currentTexture;
+                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
                     bool isSanta = (lower.find("weihnachtsman") != std::string::npos ||
                                     lower.find("weihnacht") != std::string::npos ||
-                                    lower.find("santa") != std::string::npos);
-                    
+                                    lower.find("santa") != std::string::npos ||
+                                    lower.find("kopf") != std::string::npos ||
+                                    lower.find("koerper") != std::string::npos ||
+                                    lower.find("hand") != std::string::npos ||
+                                    lower.find("bein") != std::string::npos);
                     if (isSanta && foundTexture.empty()) {
-                        foundTexture = fn;
-                        break;
+                        foundTexture = currentTexture;
                     }
+                    break;
                 }
             }
             continue;
@@ -186,6 +193,26 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                         if (tokens[k].type == 7) { meshUVs = &tokens[k].floatList; break; }
                     }
                 }
+            }
+            
+            // Filter: only include if current texture is Santa-related (or no texture yet)
+            std::string lower = currentTexture;
+            std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+            bool isTree = (lower.find("tanne") != std::string::npos ||
+                           lower.find("baum") != std::string::npos ||
+                           lower.find("weihnachtsbaum") != std::string::npos);
+            bool isPlatform = (lower.find("plattform") != std::string::npos ||
+                               lower.find("objects") != std::string::npos ||
+                               lower.find("misc") != std::string::npos ||
+                               lower.find("dach") != std::string::npos ||
+                               lower.find("haus") != std::string::npos);
+            
+            bool skipThisMesh = (isTree || isPlatform);
+            
+            if (skipThisMesh) {
+                meshesSkipped++;
+                NSLog(@"[Santa] Skipping mesh (tex=%s)", currentTexture.c_str());
+                continue;
             }
             
             if (meshVerts && meshVerts->size() >= 3) {
@@ -233,17 +260,13 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 }
                 
                 meshCount++;
-                NSLog(@"[Santa] Mesh %d: %d v (total %d v, %d idx)",
-                      meshCount, vc, (int)(allVerts.size()/3), (int)allIdx.size());
-                
-                // Sirf PEHLA mesh (Santa's body) — Christmas tree skip
-                if (meshCount >= 1) {
-                    NSLog(@"[Santa] Stopping after first mesh");
-                    break;
-                }
+                meshesIncluded++;
+                NSLog(@"[Santa] Mesh %d included: %d v (tex=%s)", meshCount, vc, currentTexture.c_str());
             }
         }
     }
+    
+    NSLog(@"[Santa] Included %d meshes, skipped %d", meshesIncluded, meshesSkipped);
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -259,7 +282,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     }
     
     NSLog(@"[Santa] Final: %d meshes, %d v, %d f, tex=%@",
-          meshCount, mesh.vertexCount, mesh.faceCount, mesh.textureName ?: @"(none)");
+          meshesIncluded, mesh.vertexCount, mesh.faceCount, mesh.textureName ?: @"(none)");
     
     return mesh;
 }
