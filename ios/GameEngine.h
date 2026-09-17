@@ -12,9 +12,14 @@
 @property (strong, nonatomic) NSString *debugInfo;
 @end
 
+@interface LevelObject : NSObject
+@property (strong, nonatomic) NSString *objectName;
+@property (nonatomic) float x, y, z;
+@end
+
 @interface GameEngine : NSObject
 + (NSData *)loadAssetNamed:(NSString *)name;
-+ (MeshData *)extractMeshAtOffset:(NSUInteger)offset;
-+ (MeshData *)extractSantaWithTransforms:(NSUInteger)offset;
-+ (NSString *)scanForSantaModel;
++ (MeshData *)extractMeshFromAsset:(NSString *)assetName;
++ (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath;
++ (NSString *)listLevelFiles;
 @end
