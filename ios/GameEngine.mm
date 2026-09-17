@@ -18,6 +18,7 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
+    // Row-major read
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
         for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
@@ -88,6 +89,8 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     std::vector<uint32_t> allIdx;
     std::string foundTexture;
     int meshCount = 0;
+    int meshesIncluded = 0;
+    int meshesSkipped = 0;
     
     std::string currentTexture = "";
     
@@ -192,14 +195,12 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             }
             
             if (meshVerts && meshVerts->size() >= 3) {
-                // ============ Determine color from texture ============
+                // ============ Determine category from texture ============
                 std::string lower = currentTexture;
                 std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
                 
-                float r = 0.6f, g = 0.6f, b = 0.6f;  // grey = unknown
-                const char* colorLabel = "GREY (unknown)";
-                
                 bool isSanta = (lower.find("weihnachtsman") != std::string::npos ||
+                                lower.find("weihnacht") != std::string::npos ||
                                 lower.find("santa") != std::string::npos ||
                                 lower.find("kopf") != std::string::npos ||
                                 lower.find("koerper") != std::string::npos ||
@@ -216,18 +217,21 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                                 lower.find("misc") != std::string::npos);
                 bool isMisc = (lower.find("objects") != std::string::npos);
                 
+                // SKIP: tree, house, misc — sirf Santa (ya unknown/grey) rakho
+                if (isTree || isHouse || isMisc) {
+                    meshesSkipped++;
+                    NSLog(@"[Santa] Skipping mesh (tex=%s, class=%s)",
+                          currentTexture.c_str(),
+                          isTree ? "tree" : (isHouse ? "house" : "misc"));
+                    continue;
+                }
+                
+                // Color: red if Santa texture, grey if unknown (both = Santa)
+                float r = 0.6f, g = 0.6f, b = 0.6f;   // grey
+                const char* colorLabel = "GREY (unknown = Santa)";
                 if (isSanta) {
-                    r = 1.0f; g = 0.0f; b = 0.0f;   // 🔴 RED
+                    r = 1.0f; g = 0.0f; b = 0.0f;     // red
                     colorLabel = "RED (Santa)";
-                } else if (isTree) {
-                    r = 0.0f; g = 1.0f; b = 0.0f;   // 🟢 GREEN
-                    colorLabel = "GREEN (Tree)";
-                } else if (isHouse) {
-                    r = 1.0f; g = 1.0f; b = 0.0f;   // 🟡 YELLOW
-                    colorLabel = "YELLOW (House)";
-                } else if (isMisc) {
-                    r = 0.0f; g = 0.5f; b = 1.0f;   // 🔵 BLUE
-                    colorLabel = "BLUE (Objects)";
                 }
                 
                 int baseVertex = (int)(allVerts.size() / 3);
@@ -240,7 +244,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                     allVerts.push_back(worldPos.y);
                     allVerts.push_back(worldPos.z);
                     
-                    // Add color per vertex
                     allColors.push_back(r);
                     allColors.push_back(g);
                     allColors.push_back(b);
@@ -279,11 +282,14 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 }
                 
                 meshCount++;
-                NSLog(@"[Santa] Mesh %d: %d v, color=%s (tex=%s)",
+                meshesIncluded++;
+                NSLog(@"[Santa] Mesh %d included: %d v, color=%s (tex=%s)",
                       meshCount, vc, colorLabel, currentTexture.c_str());
             }
         }
     }
+    
+    NSLog(@"[Santa] Included %d meshes, skipped %d", meshesIncluded, meshesSkipped);
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -299,7 +305,8 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
         mesh.textureName = [NSString stringWithUTF8String:foundTexture.c_str()];
     }
     
-    NSLog(@"[Santa] Final: %d meshes, %d v, %d f", meshCount, mesh.vertexCount, mesh.faceCount);
+    NSLog(@"[Santa] Final: %d meshes, %d v, %d f",
+          meshesIncluded, mesh.vertexCount, mesh.faceCount);
     
     return mesh;
 }
