@@ -1,275 +1,927 @@
 #include "XFileParser.h"
-#include <cstring>
-#include <cstdio>
-#include <sstream>
+
 #include <zlib.h>
+
+#include <algorithm>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <sstream>
+#include <string>
+#include <vector>
+
+// ============================================================
+// Debug log
+// ============================================================
 
 std::string& xpkDebugLog() {
     static std::string log;
     return log;
 }
 
-static uint32_t readU32(const uint8_t* data, size_t offset) {
-    return data[offset] | (data[offset+1] << 8) | (data[offset+2] << 16) | (data[offset+3] << 24);
+// ============================================================
+// Safe readers
+// ============================================================
+
+static bool canRead(
+    size_t offset,
+    size_t amount,
+    size_t size
+) {
+    return offset <= size &&
+           amount <= (size - offset);
 }
 
-static uint16_t readU16(const uint8_t* data, size_t offset) {
-    return data[offset] | (data[offset+1] << 8);
+static uint16_t readU16(
+    const uint8_t* data,
+    size_t offset
+) {
+    return (uint16_t)data[offset] |
+           ((uint16_t)data[offset + 1] << 8);
 }
 
-// bzip decompression: deflate starts at CK+2
-std::vector<uint8_t> XFileParser::decompressMSZip(const uint8_t* data, size_t size) {
+static uint32_t readU32(
+    const uint8_t* data,
+    size_t offset
+) {
+    return
+        ((uint32_t)data[offset]) |
+        ((uint32_t)data[offset + 1] << 8) |
+        ((uint32_t)data[offset + 2] << 16) |
+        ((uint32_t)data[offset + 3] << 24);
+}
+
+// ============================================================
+// MSZip
+//
+// XPK compressed X files use MSZip blocks:
+//
+//     'C' 'K'
+//     compressed DEFLATE stream
+//
+// The compressed stream itself is raw DEFLATE.
+// ============================================================
+
+std::vector<uint8_t>
+XFileParser::decompressMSZip(
+    const uint8_t* data,
+    size_t size
+) {
     xpkDebugLog().clear();
+
     std::vector<uint8_t> output;
-    if (size < 30) return output;
-    
-    char buf[512];
-    size_t offset = 0;
-    int blockNum = 0;
-    
-    while (offset + 8 <= size && blockNum < 500) {
-        while (offset + 1 < size && !(data[offset] == 0x43 && data[offset+1] == 0x4B)) {
-            offset++;
-        }
-        if (offset + 8 > size) break;
-        
-        size_t ckPos = offset;
-        size_t startOffset = ckPos + 2;
-        uint16_t uncompSize = readU16(data, ckPos + 4);
-        
-        if (uncompSize == 0 || uncompSize > 60000) {
-            offset = ckPos + 2;
-            blockNum++;
-            continue;
-        }
-        
-        uint8_t* outBuf = new uint8_t[uncompSize];
-        z_stream strm;
-        memset(&strm, 0, sizeof(strm));
-        strm.next_in = (Bytef*)(data + startOffset);
-        strm.avail_in = (uInt)(size - startOffset);
-        strm.next_out = outBuf;
-        strm.avail_out = uncompSize;
-        
-        if (inflateInit2(&strm, -MAX_WBITS) == Z_OK) {
-            int ret = inflate(&strm, Z_FINISH);
-            uLong totalOut = strm.total_out;
-            uLong totalIn = strm.total_in;
-            inflateEnd(&strm);
-            
-            if (totalOut > 0) {
-                output.insert(output.end(), outBuf, outBuf + totalOut);
-            }
-            delete[] outBuf;
-            
-            if (ret == Z_STREAM_END) {
-                offset = startOffset + totalIn;
-            } else {
-                offset = ckPos + 2;
-            }
-            blockNum++;
-            continue;
-        } else {
-            delete[] outBuf;
-        }
-        offset = ckPos + 2;
-        blockNum++;
+
+    if (!data || size < 8) {
+        return output;
     }
-    
-    snprintf(buf, sizeof(buf), "Total decompressed: %lu bytes across %d blocks\n",
-             (unsigned long)output.size(), blockNum);
-    xpkDebugLog() += buf;
+
+    size_t offset = 0;
+    int blockNumber = 0;
+
+    while (offset + 8 <= size &&
+           blockNumber < 4096) {
+
+        // ----------------------------------------------------
+        // Search for CK signature.
+        // ----------------------------------------------------
+
+        size_t ckPos = offset;
+
+        while (ckPos + 1 < size) {
+
+            if (data[ckPos] == 'C' &&
+                data[ckPos + 1] == 'K') {
+                break;
+            }
+
+            ++ckPos;
+        }
+
+        if (ckPos + 1 >= size)
+            break;
+
+        // ----------------------------------------------------
+        // MSZip block header.
+        // ----------------------------------------------------
+
+        size_t compressedStart =
+            ckPos + 2;
+
+        if (compressedStart >= size)
+            break;
+
+        // Existing Santa XPK data uses the two-byte size
+        // field at CK+4.
+        if (ckPos + 6 > size)
+            break;
+
+        uint16_t expectedSize =
+            readU16(data, ckPos + 4);
+
+        // Some malformed/search hits can look like CK.
+        if (expectedSize == 0 ||
+            expectedSize > 65535) {
+
+            offset = compressedStart;
+            ++blockNumber;
+            continue;
+        }
+
+        std::vector<uint8_t> blockOutput(
+            expectedSize
+        );
+
+        z_stream stream{};
+        stream.next_in =
+            const_cast<Bytef*>(
+                reinterpret_cast<const Bytef*>(
+                    data + compressedStart
+                )
+            );
+
+        stream.avail_in =
+            (uInt)(size - compressedStart);
+
+        stream.next_out =
+            reinterpret_cast<Bytef*>(
+                blockOutput.data()
+            );
+
+        stream.avail_out =
+            (uInt)blockOutput.size();
+
+        int init =
+            inflateInit2(
+                &stream,
+                -MAX_WBITS
+            );
+
+        if (init != Z_OK) {
+            offset = compressedStart;
+            ++blockNumber;
+            continue;
+        }
+
+        int ret =
+            inflate(
+                &stream,
+                Z_FINISH
+            );
+
+        size_t produced =
+            (size_t)stream.total_out;
+
+        size_t consumed =
+            (size_t)stream.total_in;
+
+        inflateEnd(&stream);
+
+        if (produced > 0) {
+
+            if (produced > blockOutput.size()) {
+                produced = blockOutput.size();
+            }
+
+            output.insert(
+                output.end(),
+                blockOutput.begin(),
+                blockOutput.begin() + produced
+            );
+        }
+
+        // ----------------------------------------------------
+        // Valid DEFLATE block.
+        // ----------------------------------------------------
+
+        if (ret == Z_STREAM_END &&
+            consumed > 0) {
+
+            offset =
+                compressedStart + consumed;
+
+        } else {
+
+            // Do not get stuck at the same CK.
+            offset =
+                compressedStart;
+        }
+
+        ++blockNumber;
+    }
+
+    char logBuffer[256];
+
+    std::snprintf(
+        logBuffer,
+        sizeof(logBuffer),
+        "MSZip: %zu bytes, %d blocks\n",
+        output.size(),
+        blockNumber
+    );
+
+    xpkDebugLog() += logBuffer;
+
     return output;
 }
 
-// Token parser
-std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, int maxTokens) {
+// ============================================================
+// X binary token parser
+// ============================================================
+
+std::vector<XToken>
+XFileParser::parseTokens(
+    const uint8_t* data,
+    size_t size,
+    int maxTokens
+) {
     std::vector<XToken> tokens;
-    if (size < 4) return tokens;
+
+    if (!data ||
+        size < 2 ||
+        maxTokens <= 0) {
+        return tokens;
+    }
+
     size_t offset = 0;
+
     int templateDepth = 0;
     int braceDepth = 0;
-    int skipCount = 0;
-    
-    while (offset + 2 <= size && (int)tokens.size() < maxTokens) {
-        uint16_t tokenType = readU16(data, offset);
+
+    while (offset + 2 <= size &&
+           (int)tokens.size() < maxTokens) {
+
+        uint16_t tokenType =
+            readU16(data, offset);
+
         offset += 2;
-        
+
+        // ----------------------------------------------------
+        // Known binary X token range.
+        // ----------------------------------------------------
+
         if (tokenType > 51) {
-            skipCount++;
-            if (skipCount > 1000) break;
-            continue;
+            // Unknown token. Stop instead of silently
+            // desynchronizing the complete stream.
+            break;
         }
-        skipCount = 0;
-        
-        XToken token;
+
+        XToken token{};
+
         token.type = tokenType;
         token.intValue = 0;
-        token.floatValue = 0;
+        token.floatValue = 0.0f;
         token.dwordValue = 0;
         token.wordValue = 0;
-        
+
+        bool valid = true;
+
         switch (tokenType) {
+
+            // ------------------------------------------------
+            // NAME
+            // ------------------------------------------------
+
             case 1: {
-                // NAME - no padding
-                if (offset + 4 > size) { offset = size; break; }
-                uint32_t len = readU32(data, offset);
+
+                if (!canRead(
+                        offset,
+                        4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                uint32_t length =
+                    readU32(data, offset);
+
                 offset += 4;
-                if (len > 10000 || offset + len > size) { offset = size; break; }
-                token.name = std::string((const char*)(data + offset), len);
-                offset += len;
+
+                if (length > 100000 ||
+                    !canRead(
+                        offset,
+                        length,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                token.name.assign(
+                    reinterpret_cast<const char*>(
+                        data + offset
+                    ),
+                    length
+                );
+
+                offset += length;
+
                 break;
             }
+
+            // ------------------------------------------------
+            // STRING
+            // ------------------------------------------------
+
             case 2: {
-                // STRING - 2 bytes padding after
-                if (offset + 4 > size) { offset = size; break; }
-                uint32_t len = readU32(data, offset);
+
+                if (!canRead(
+                        offset,
+                        4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                uint32_t length =
+                    readU32(data, offset);
+
                 offset += 4;
-                if (len > 10000 || offset + len > size) { offset = size; break; }
-                token.name = std::string((const char*)(data + offset), len);
-                offset += len;
-                // STRING padding: 2 bytes null terminator
-                if (offset + 2 <= size) offset += 2;
+
+                if (length > 100000 ||
+                    !canRead(
+                        offset,
+                        length,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                token.name.assign(
+                    reinterpret_cast<const char*>(
+                        data + offset
+                    ),
+                    length
+                );
+
+                offset += length;
+
+                // Santa X files use a two-byte terminator
+                // following STRING data.
+                if (canRead(offset, 2, size)) {
+                    offset += 2;
+                } else {
+                    valid = false;
+                }
+
                 break;
             }
-            case 3:
-                if (offset + 4 > size) { offset = size; break; }
-                token.intValue = (int)readU32(data, offset);
+
+            // ------------------------------------------------
+            // INT
+            // ------------------------------------------------
+
+            case 3: {
+
+                if (!canRead(
+                        offset,
+                        4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                token.intValue =
+                    (int32_t)readU32(
+                        data,
+                        offset
+                    );
+
                 offset += 4;
+
                 break;
-            case 5:
-                if (offset + 16 > size) { offset = size; break; }
+            }
+
+            // ------------------------------------------------
+            // GUID
+            // ------------------------------------------------
+
+            case 5: {
+
+                if (!canRead(
+                        offset,
+                        16,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
                 offset += 16;
+
                 break;
+            }
+
+            // ------------------------------------------------
+            // Integer list
+            // ------------------------------------------------
+
             case 6: {
-                if (offset + 4 > size) { offset = size; break; }
-                uint32_t count = readU32(data, offset);
+
+                if (!canRead(
+                        offset,
+                        4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                uint32_t count =
+                    readU32(data, offset);
+
                 offset += 4;
-                if (count > 100000) { offset = size; break; }
-                for (uint32_t i = 0; i < count && offset + 4 <= size; i++) {
-                    token.intList.push_back((int)readU32(data, offset));
+
+                if (count > 1000000 ||
+                    !canRead(
+                        offset,
+                        (size_t)count * 4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                token.intList.reserve(count);
+
+                for (uint32_t i = 0;
+                     i < count;
+                     ++i) {
+
+                    token.intList.push_back(
+                        (int32_t)readU32(
+                            data,
+                            offset
+                        )
+                    );
+
                     offset += 4;
                 }
+
                 break;
             }
+
+            // ------------------------------------------------
+            // Float list
+            // ------------------------------------------------
+
             case 7: {
-                if (offset + 4 > size) { offset = size; break; }
-                uint32_t count = readU32(data, offset);
+
+                if (!canRead(
+                        offset,
+                        4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                uint32_t count =
+                    readU32(data, offset);
+
                 offset += 4;
-                if (count > 100000) { offset = size; break; }
-                for (uint32_t i = 0; i < count && offset + 4 <= size; i++) {
-                    uint32_t bits = readU32(data, offset);
-                    float f; memcpy(&f, &bits, 4);
-                    token.floatList.push_back(f);
+
+                if (count > 1000000 ||
+                    !canRead(
+                        offset,
+                        (size_t)count * 4,
+                        size)) {
+                    valid = false;
+                    break;
+                }
+
+                token.floatList.reserve(count);
+
+                for (uint32_t i = 0;
+                     i < count;
+                     ++i) {
+
+                    uint32_t bits =
+                        readU32(
+                            data,
+                            offset
+                        );
+
+                    float value;
+
+                    std::memcpy(
+                        &value,
+                        &bits,
+                        sizeof(float)
+                    );
+
+                    token.floatList.push_back(
+                        value
+                    );
+
                     offset += 4;
                 }
+
                 break;
             }
-            case 10: braceDepth++; break;
+
+            // ------------------------------------------------
+            // Braces / punctuation
+            // ------------------------------------------------
+
+            case 10:
+                ++braceDepth;
+                break;
+
             case 11:
-                braceDepth--;
-                if (braceDepth <= 0) { braceDepth = 0; templateDepth = 0; }
+                if (braceDepth > 0)
+                    --braceDepth;
                 break;
-            case 12: case 13: case 14: case 15:
-            case 16: case 17: case 18: case 19: case 20:
+
+            case 12:
+            case 13:
+            case 14:
+            case 15:
+            case 16:
+            case 17:
+            case 18:
+            case 19:
+            case 20:
                 break;
-            case 31: templateDepth++; break;
+
+            // ------------------------------------------------
+            // TEMPLATE
+            // ------------------------------------------------
+
+            case 31:
+                ++templateDepth;
+                break;
+
+            // ------------------------------------------------
+            // WORD
+            // ------------------------------------------------
+
             case 40:
+
                 if (templateDepth == 0) {
-                    if (offset + 2 > size) { offset = size; break; }
-                    token.wordValue = readU16(data, offset); offset += 2;
-                }
-                break;
-            case 41:
-                if (templateDepth == 0) {
-                    if (offset + 4 > size) { offset = size; break; }
-                    token.dwordValue = (int)readU32(data, offset); offset += 4;
-                }
-                break;
-            case 42:
-                if (templateDepth == 0) {
-                    if (offset + 4 > size) { offset = size; break; }
-                    uint32_t bits = readU32(data, offset);
-                    memcpy(&token.floatValue, &bits, 4);
-                    offset += 4;
-                }
-                break;
-            case 43:
-                if (templateDepth == 0) {
-                    if (offset + 8 > size) { offset = size; break; }
-                    offset += 8;
-                }
-                break;
-            case 44: case 45:
-                if (templateDepth == 0) {
-                    if (offset + 1 > size) { offset = size; break; }
-                    offset += 1;
-                }
-                break;
-            case 46:
-                if (templateDepth == 0) {
-                    if (offset + 2 > size) { offset = size; break; }
+
+                    if (!canRead(
+                            offset,
+                            2,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    token.wordValue =
+                        readU16(
+                            data,
+                            offset
+                        );
+
                     offset += 2;
                 }
+
                 break;
+
+            // ------------------------------------------------
+            // DWORD
+            // ------------------------------------------------
+
+            case 41:
+
+                if (templateDepth == 0) {
+
+                    if (!canRead(
+                            offset,
+                            4,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    token.dwordValue =
+                        (int32_t)readU32(
+                            data,
+                            offset
+                        );
+
+                    offset += 4;
+                }
+
+                break;
+
+            // ------------------------------------------------
+            // FLOAT
+            // ------------------------------------------------
+
+            case 42:
+
+                if (templateDepth == 0) {
+
+                    if (!canRead(
+                            offset,
+                            4,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    uint32_t bits =
+                        readU32(
+                            data,
+                            offset
+                        );
+
+                    std::memcpy(
+                        &token.floatValue,
+                        &bits,
+                        sizeof(float)
+                    );
+
+                    offset += 4;
+                }
+
+                break;
+
+            // ------------------------------------------------
+            // DOUBLE
+            // ------------------------------------------------
+
+            case 43:
+
+                if (templateDepth == 0) {
+
+                    if (!canRead(
+                            offset,
+                            8,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    offset += 8;
+                }
+
+                break;
+
+            // ------------------------------------------------
+            // CHAR / UCHAR
+            // ------------------------------------------------
+
+            case 44:
+            case 45:
+
+                if (templateDepth == 0) {
+
+                    if (!canRead(
+                            offset,
+                            1,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    offset += 1;
+                }
+
+                break;
+
+            // ------------------------------------------------
+            // SWORD
+            // ------------------------------------------------
+
+            case 46:
+
+                if (templateDepth == 0) {
+
+                    if (!canRead(
+                            offset,
+                            2,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    offset += 2;
+                }
+
+                break;
+
+            // ------------------------------------------------
+            // SDWORD
+            // ------------------------------------------------
+
             case 47:
+
                 if (templateDepth == 0) {
-                    if (offset + 4 > size) { offset = size; break; }
+
+                    if (!canRead(
+                            offset,
+                            4,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
                     offset += 4;
                 }
+
                 break;
-            case 48: case 49: case 50:
-                // LPSTR / UNICODE / CSTRING - no padding (per Assimp)
+
+            // ------------------------------------------------
+            // LPSTR / UNICODE / CSTRING
+            // ------------------------------------------------
+
+            case 48:
+            case 49:
+            case 50:
+
                 if (templateDepth == 0) {
-                    if (offset + 4 > size) { offset = size; break; }
-                    uint32_t len = readU32(data, offset);
+
+                    if (!canRead(
+                            offset,
+                            4,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    uint32_t length =
+                        readU32(
+                            data,
+                            offset
+                        );
+
                     offset += 4;
-                    if (len > 10000 || offset + len > size) { offset = size; break; }
-                    offset += len;
+
+                    if (length > 100000 ||
+                        !canRead(
+                            offset,
+                            length,
+                            size)) {
+                        valid = false;
+                        break;
+                    }
+
+                    offset += length;
                 }
+
                 break;
-            case 51: break;
-            default: break;
+
+            // ------------------------------------------------
+            // ARRAY
+            // ------------------------------------------------
+
+            case 51:
+                break;
+
+            default:
+                break;
         }
-        tokens.push_back(token);
+
+        if (!valid)
+            break;
+
+        tokens.push_back(
+            std::move(token)
+        );
     }
+
     return tokens;
 }
 
-std::string XFileParser::describeToken(const XToken& token) {
-    std::ostringstream oss;
+// ============================================================
+// Token description
+// ============================================================
+
+std::string
+XFileParser::describeToken(
+    const XToken& token
+) {
+    std::ostringstream out;
+
     switch (token.type) {
-        case 1: oss << "NAME: \"" << token.name << "\""; break;
-        case 2: oss << "STR: \"" << token.name << "\""; break;
-        case 3: oss << "INT: " << token.intValue; break;
-        case 5: oss << "GUID"; break;
-        case 6: oss << "ILIST(" << token.intList.size() << ")"; break;
-        case 7: oss << "FLIST(" << token.floatList.size() << ")"; break;
-        case 10: oss << "{"; break;
-        case 11: oss << "}"; break;
-        case 12: oss << "("; break;
-        case 13: oss << ")"; break;
-        case 14: oss << "["; break;
-        case 15: oss << "]"; break;
-        case 16: oss << "<"; break;
-        case 17: oss << ">"; break;
-        case 18: oss << "."; break;
-        case 19: oss << ","; break;
-        case 20: oss << ";"; break;
-        case 31: oss << "TEMPLATE"; break;
-        case 40: oss << "WORD"; break;
-        case 41: oss << "DWORD"; break;
-        case 42: oss << "FLOAT"; break;
-        case 43: oss << "DOUBLE"; break;
-        case 44: oss << "CHAR"; break;
-        case 45: oss << "UCHAR"; break;
-        case 46: oss << "SWORD"; break;
-        case 47: oss << "SDWORD"; break;
-        case 48: oss << "LPSTR"; break;
-        case 49: oss << "UNICODE"; break;
-        case 50: oss << "CSTRING"; break;
-        case 51: oss << "ARRAY"; break;
-        default: oss << "??(" << token.type << ")"; break;
+
+        case 1:
+            out << "NAME: \"" << token.name << "\"";
+            break;
+
+        case 2:
+            out << "STRING: \"" << token.name << "\"";
+            break;
+
+        case 3:
+            out << "INT: " << token.intValue;
+            break;
+
+        case 5:
+            out << "GUID";
+            break;
+
+        case 6:
+            out << "ILIST("
+                << token.intList.size()
+                << ")";
+            break;
+
+        case 7:
+            out << "FLIST("
+                << token.floatList.size()
+                << ")";
+            break;
+
+        case 10:
+            out << "{";
+            break;
+
+        case 11:
+            out << "}";
+            break;
+
+        case 12:
+            out << "(";
+            break;
+
+        case 13:
+            out << ")";
+            break;
+
+        case 14:
+            out << "[";
+            break;
+
+        case 15:
+            out << "]";
+            break;
+
+        case 16:
+            out << "<";
+            break;
+
+        case 17:
+            out << ">";
+            break;
+
+        case 18:
+            out << ".";
+            break;
+
+        case 19:
+            out << ",";
+            break;
+
+        case 20:
+            out << ";";
+            break;
+
+        case 31:
+            out << "TEMPLATE";
+            break;
+
+        case 40:
+            out << "WORD";
+            break;
+
+        case 41:
+            out << "DWORD";
+            break;
+
+        case 42:
+            out << "FLOAT";
+            break;
+
+        case 43:
+            out << "DOUBLE";
+            break;
+
+        case 44:
+            out << "CHAR";
+            break;
+
+        case 45:
+            out << "UCHAR";
+            break;
+
+        case 46:
+            out << "SWORD";
+            break;
+
+        case 47:
+            out << "SDWORD";
+            break;
+
+        case 48:
+            out << "LPSTR";
+            break;
+
+        case 49:
+            out << "UNICODE";
+            break;
+
+        case 50:
+            out << "CSTRING";
+            break;
+
+        case 51:
+            out << "ARRAY";
+            break;
+
+        default:
+            out << "UNKNOWN("
+                << token.type
+                << ")";
+            break;
     }
-    return oss.str();
+
+    return out.str();
 }
