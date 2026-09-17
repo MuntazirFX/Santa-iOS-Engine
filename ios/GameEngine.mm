@@ -11,6 +11,8 @@
 #include <cmath>
 #include <unordered_map>
 #include <cstring>
+#include <cctype>
+#include <cstdio>
 
 
 // ============================================================
@@ -153,70 +155,207 @@ struct SkinWeightsData
 
 // ============================================================
 // Find XPK
+//
+// The build workflow places xmas.xpk directly inside the
+// application bundle.
+//
+// We deliberately verify the file using Foundation and C
+// fopen() before handing the path to the C++ AssetManager.
 // ============================================================
 
 + (NSString *)xpkPath
 {
     NSBundle *bundle = [NSBundle mainBundle];
 
-    // Normal bundle resource.
+    if (!bundle)
+    {
+        NSLog(@"[XPK] ERROR: mainBundle is nil");
+        return nil;
+    }
+
+    NSString *resourcePath = [bundle resourcePath];
+
+    NSLog(@"[XPK] Bundle resource path: %@",
+          resourcePath);
+
+
+    // --------------------------------------------------------
+    // Primary lookup
+    // --------------------------------------------------------
+
     NSString *path =
-        [bundle pathForResource:@"xmas" ofType:@"xpk"];
+        [bundle pathForResource:@"xmas"
+                         ofType:@"xpk"];
 
     if (path)
     {
-        NSLog(@"[XPK] Found resource: %@", path);
-
-        NSDictionary *attrs =
-            [[NSFileManager defaultManager]
-             attributesOfItemAtPath:path
-             error:nil];
-
-        NSNumber *size = attrs[NSFileSize];
-
-        NSLog(@"[XPK] Size: %@ bytes", size);
-
-        return path;
+        NSLog(@"[XPK] Foundation found: %@",
+              path);
+    }
+    else
+    {
+        NSLog(@"[XPK] Foundation lookup failed");
     }
 
 
-    // Fallback: search bundle recursively.
-    NSString *resourcePath = bundle.resourcePath;
+    // --------------------------------------------------------
+    // Direct bundle path fallback
+    // --------------------------------------------------------
 
-    if (resourcePath)
+    if (!path && resourcePath)
+    {
+        NSString *candidate =
+            [resourcePath stringByAppendingPathComponent:@"xmas.xpk"];
+
+        if ([[NSFileManager defaultManager]
+             fileExistsAtPath:candidate])
+        {
+            path = candidate;
+
+            NSLog(@"[XPK] Direct bundle path found: %@",
+                  path);
+        }
+    }
+
+
+    // --------------------------------------------------------
+    // Recursive fallback
+    // --------------------------------------------------------
+
+    if (!path && resourcePath)
     {
         NSDirectoryEnumerator *enumerator =
             [[NSFileManager defaultManager]
              enumeratorAtPath:resourcePath];
 
-        NSString *file;
+        NSString *file = nil;
 
         while ((file = [enumerator nextObject]))
         {
-            if ([[file.pathExtension lowercaseString] isEqualToString:@"xpk"])
+            if ([[file.pathExtension lowercaseString]
+                 isEqualToString:@"xpk"])
             {
                 NSString *candidate =
-                    [resourcePath stringByAppendingPathComponent:file];
+                    [resourcePath
+                     stringByAppendingPathComponent:file];
 
-                NSLog(@"[XPK] Recursive match: %@", candidate);
+                path = candidate;
 
-                NSDictionary *attrs =
-                    [[NSFileManager defaultManager]
-                     attributesOfItemAtPath:candidate
-                     error:nil];
+                NSLog(@"[XPK] Recursive match: %@",
+                      path);
 
-                NSNumber *size = attrs[NSFileSize];
-
-                NSLog(@"[XPK] Recursive size: %@ bytes", size);
-
-                return candidate;
+                break;
             }
         }
     }
 
-    NSLog(@"[XPK] ERROR: xmas.xpk NOT FOUND in application bundle");
 
-    return nil;
+    if (!path)
+    {
+        NSLog(@"[XPK] ERROR: xmas.xpk NOT FOUND");
+
+        return nil;
+    }
+
+
+    // --------------------------------------------------------
+    // Foundation verification
+    // --------------------------------------------------------
+
+    BOOL exists =
+        [[NSFileManager defaultManager]
+         fileExistsAtPath:path];
+
+    NSLog(@"[XPK] fileExistsAtPath = %@",
+          exists ? @"YES" : @"NO");
+
+    if (!exists)
+    {
+        NSLog(@"[XPK] ERROR: path returned but file does not exist");
+
+        return nil;
+    }
+
+
+    NSDictionary *attrs =
+        [[NSFileManager defaultManager]
+         attributesOfItemAtPath:path
+         error:nil];
+
+    NSNumber *size =
+        attrs[NSFileSize];
+
+    NSLog(@"[XPK] File size = %@ bytes",
+          size);
+
+
+    if (!size ||
+        size.unsignedLongLongValue == 0)
+    {
+        NSLog(@"[XPK] ERROR: XPK is empty");
+
+        return nil;
+    }
+
+
+    // --------------------------------------------------------
+    // C fopen verification
+    //
+    // This is important because AssetManager ultimately uses
+    // standard C++ file I/O.
+    // --------------------------------------------------------
+
+    const char *utf8Path =
+        [path fileSystemRepresentation];
+
+    if (!utf8Path)
+    {
+        NSLog(@"[XPK] ERROR: could not obtain filesystem path");
+
+        return nil;
+    }
+
+
+    FILE *testFile =
+        std::fopen(
+            utf8Path,
+            "rb"
+        );
+
+    if (!testFile)
+    {
+        NSLog(@"[XPK] ERROR: fopen() failed for:");
+        NSLog(@"[XPK] %s", utf8Path);
+
+        return nil;
+    }
+
+
+    std::fseek(
+        testFile,
+        0,
+        SEEK_END
+    );
+
+    long long cSize =
+        std::ftell(testFile);
+
+    std::fclose(testFile);
+
+
+    NSLog(@"[XPK] fopen() OK, size = %lld bytes",
+          cSize);
+
+
+    if (cSize <= 0)
+    {
+        NSLog(@"[XPK] ERROR: fopen reported empty file");
+
+        return nil;
+    }
+
+
+    return path;
 }
 
 
@@ -226,18 +365,32 @@ struct SkinWeightsData
 
 + (NSData *)loadAssetNamed:(NSString *)name
 {
-    NSString *path = [self xpkPath];
+    NSString *path =
+        [self xpkPath];
 
     if (!path)
     {
-        NSLog(@"[XPK] Cannot load %@ because XPK was not found", name);
+        NSLog(@"[XPK] Cannot load %@ because XPK was not found",
+              name);
+
         return nil;
     }
 
 
+    const char *filesystemPath =
+        [path fileSystemRepresentation];
+
+    NSLog(@"[XPK] Opening XPK with AssetManager:");
+    NSLog(@"[XPK] %s",
+          filesystemPath);
+
+
     AssetManager am;
 
-    if (!am.loadXPK([path UTF8String]))
+
+    if (!am.loadXPK(
+            std::string(filesystemPath)
+        ))
     {
         NSLog(@"[XPK] AssetManager failed to open XPK");
 
@@ -280,7 +433,8 @@ struct SkinWeightsData
     // Case-insensitive / slash-normalized match
     // --------------------------------------------------------
 
-    std::string normalizedRequested = requested;
+    std::string normalizedRequested =
+        requested;
 
     std::replace(
         normalizedRequested.begin(),
@@ -292,7 +446,8 @@ struct SkinWeightsData
 
     for (const auto& filename : filenames)
     {
-        std::string normalized = filename;
+        std::string normalized =
+            filename;
 
         std::replace(
             normalized.begin(),
@@ -302,8 +457,12 @@ struct SkinWeightsData
         );
 
 
-        std::string a = normalized;
-        std::string b = normalizedRequested;
+        std::string a =
+            normalized;
+
+        std::string b =
+            normalizedRequested;
+
 
         std::transform(
             a.begin(),
@@ -314,6 +473,7 @@ struct SkinWeightsData
                 return (char)std::tolower(c);
             }
         );
+
 
         std::transform(
             b.begin(),
@@ -350,10 +510,6 @@ struct SkinWeightsData
           name);
 
 
-    // --------------------------------------------------------
-    // Useful diagnostic
-    // --------------------------------------------------------
-
     NSLog(@"[XPK] First archive files:");
 
     int printed = 0;
@@ -380,7 +536,8 @@ struct SkinWeightsData
 
 + (NSString *)listLevelFiles
 {
-    NSString *path = [self xpkPath];
+    NSString *path =
+        [self xpkPath];
 
     if (!path)
     {
@@ -388,9 +545,16 @@ struct SkinWeightsData
     }
 
 
+    const char *filesystemPath =
+        [path fileSystemRepresentation];
+
+
     AssetManager am;
 
-    if (!am.loadXPK([path UTF8String]))
+
+    if (!am.loadXPK(
+            std::string(filesystemPath)
+        ))
     {
         return @"XPK load failed: AssetManager could not open file";
     }
@@ -409,7 +573,9 @@ struct SkinWeightsData
 
     for (const auto& filename : all)
     {
-        std::string lower = filename;
+        std::string lower =
+            filename;
+
 
         std::transform(
             lower.begin(),
@@ -458,7 +624,9 @@ struct SkinWeightsData
     NSLog(@"================================================");
 
 
-    NSString *path = [self xpkPath];
+    NSString *path =
+        [self xpkPath];
+
 
     if (!path)
     {
@@ -467,9 +635,16 @@ struct SkinWeightsData
     }
 
 
+    const char *filesystemPath =
+        [path fileSystemRepresentation];
+
+
     AssetManager am;
 
-    if (!am.loadXPK([path UTF8String]))
+
+    if (!am.loadXPK(
+            std::string(filesystemPath)
+        ))
     {
         NSLog(@"[Santa] FAILED: AssetManager could not load XPK");
         return nil;
@@ -494,7 +669,9 @@ struct SkinWeightsData
             am.getAllFilenames();
 
 
-        std::string wanted = requested;
+        std::string wanted =
+            requested;
+
 
         std::replace(
             wanted.begin(),
@@ -502,6 +679,7 @@ struct SkinWeightsData
             '/',
             '\\'
         );
+
 
         std::transform(
             wanted.begin(),
@@ -516,7 +694,9 @@ struct SkinWeightsData
 
         for (const auto& filename : filenames)
         {
-            std::string candidate = filename;
+            std::string candidate =
+                filename;
+
 
             std::replace(
                 candidate.begin(),
@@ -524,6 +704,7 @@ struct SkinWeightsData
                 '/',
                 '\\'
             );
+
 
             std::transform(
                 candidate.begin(),
@@ -540,6 +721,7 @@ struct SkinWeightsData
             {
                 fileData =
                     am.getAssetData(filename);
+
 
                 NSLog(@"[Santa] Case-insensitive asset match: %s",
                       filename.c_str());
