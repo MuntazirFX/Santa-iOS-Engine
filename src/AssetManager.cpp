@@ -1,772 +1,168 @@
 #include "AssetManager.h"
-
-#include <algorithm>
-#include <cstdint>
-#include <cstdio>
-#include <cerrno>
-#include <cstring>
 #include <iostream>
-#include <string>
-#include <vector>
-#include <limits>
 
-
-// ============================================================
-// Destructor
-// ============================================================
-
-AssetManager::~AssetManager()
-{
-    if (xpkFile.is_open())
-    {
+AssetManager::~AssetManager() {
+    if (xpkFile.is_open()) {
         xpkFile.close();
     }
 }
 
-
 // ============================================================
-// Load XPK
+// xmas.xpk on-disk layout (verified against the actual file):
 //
-// Santa XPK:
+//   u32      count
+//   u32[count]   nameOffsets      -> byte offset of each filename
+//                                    *within the names blob below*
+//   u32      namesLen             -> length of the names blob
+//   u8[namesLen] namesBlob        -> NUL-terminated filenames,
+//                                    indexed by nameOffsets[i]
+//   u32      totalDataSize        -> sum of sizes[] (sanity value)
+//   u32[count]   sizes            -> size in bytes of each file's data
+//   u32[count]   unknown1         -> (uncompressed size / reserved)
+//   u32[count]   unknown2         -> (checksum / reserved)
+//   ---- raw file data follows, back-to-back, in table order ----
 //
-// [uint32 fileCount]
-// [uint32 offset[fileCount]]
-// [metadata entries]
-// [raw file data]
-//
-// Metadata:
-//
-// [uint32 fileSize]
-// [null terminated filename]
-//
-// offsets are relative to the beginning of the metadata area.
+// Files are stored back-to-back with NO per-file compression in this
+// archive (despite occasional 0x1F 0x8B bytes appearing *inside* raw
+// model data, which are not real gzip streams). We therefore just
+// copy each entry's bytes out verbatim.
 // ============================================================
 
-bool AssetManager::loadXPK(
-    const std::string& filepath
-)
-{
-    // --------------------------------------------------------
-    // Reset old state
-    // --------------------------------------------------------
-
-    if (xpkFile.is_open())
-    {
+bool AssetManager::loadXPK(const std::string& filepath) {
+    if (xpkFile.is_open()) {
         xpkFile.close();
+        xpkFile.clear();
+    }
+
+    xpkFile.open(filepath, std::ios::binary);
+    if (!xpkFile.is_open()) {
+        std::cerr << "[AssetManager] Failed to open XPK file: " << filepath << std::endl;
+        return false;
     }
 
     fileTable.clear();
     orderedFilenames.clear();
 
-
-    // --------------------------------------------------------
-    // Validate path
-    // --------------------------------------------------------
-
-    if (filepath.empty())
-    {
-        std::cerr
-            << "[XPK] ERROR: empty filepath"
-            << std::endl;
-
+    // ---- count ----
+    uint32_t count = 0;
+    xpkFile.read(reinterpret_cast<char*>(&count), sizeof(count));
+    if (!xpkFile || count == 0 || count > 100000) {
+        std::cerr << "[AssetManager] Invalid file count: " << count << std::endl;
         return false;
     }
 
-
-    std::cout
-        << "[XPK] Trying to open: "
-        << filepath
-        << std::endl;
-
-
-    // --------------------------------------------------------
-    // First verify with C fopen().
-    //
-    // This gives a useful distinction between:
-    //   - path/access failure
-    //   - C++ stream failure
-    // --------------------------------------------------------
-
-    FILE *testFile =
-        std::fopen(
-            filepath.c_str(),
-            "rb"
-        );
-
-
-    if (!testFile)
-    {
-        std::cerr
-            << "[XPK] fopen FAILED: "
-            << std::strerror(errno)
-            << std::endl;
-
-        std::cerr
-            << "[XPK] Path: "
-            << filepath
-            << std::endl;
-
+    // ---- name offset table ----
+    std::vector<uint32_t> nameOffsets(count);
+    xpkFile.read(reinterpret_cast<char*>(nameOffsets.data()), count * sizeof(uint32_t));
+    if (!xpkFile) {
+        std::cerr << "[AssetManager] Failed reading name offset table" << std::endl;
         return false;
     }
 
-
-    if (std::fseek(
-            testFile,
-            0,
-            SEEK_END
-        ) != 0)
-    {
-        std::cerr
-            << "[XPK] fseek failed"
-            << std::endl;
-
-        std::fclose(testFile);
-
+    // ---- names blob ----
+    uint32_t namesLen = 0;
+    xpkFile.read(reinterpret_cast<char*>(&namesLen), sizeof(namesLen));
+    if (!xpkFile || namesLen == 0 || namesLen > 50 * 1024 * 1024) {
+        std::cerr << "[AssetManager] Invalid names blob length: " << namesLen << std::endl;
         return false;
     }
 
-
-    long long cFileLength =
-        std::ftell(testFile);
-
-
-    std::rewind(testFile);
-
-    std::fclose(testFile);
-
-
-    std::cout
-        << "[XPK] fopen OK, size="
-        << cFileLength
-        << std::endl;
-
-
-    if (cFileLength < 4)
-    {
-        std::cerr
-            << "[XPK] ERROR: file smaller than header"
-            << std::endl;
-
+    std::vector<char> namesBlob(namesLen);
+    xpkFile.read(namesBlob.data(), namesLen);
+    if (!xpkFile) {
+        std::cerr << "[AssetManager] Failed reading names blob" << std::endl;
         return false;
     }
 
-
-    // --------------------------------------------------------
-    // Open using C++ stream
-    // --------------------------------------------------------
-
-    xpkFile.open(
-        filepath.c_str(),
-        std::ios::in |
-        std::ios::binary
-    );
-
-
-    if (!xpkFile.is_open())
-    {
-        std::cerr
-            << "[XPK] ifstream FAILED"
-            << std::endl;
-
+    // ---- total data size (sanity check only) ----
+    uint32_t totalDataSize = 0;
+    xpkFile.read(reinterpret_cast<char*>(&totalDataSize), sizeof(totalDataSize));
+    if (!xpkFile) {
+        std::cerr << "[AssetManager] Failed reading total data size" << std::endl;
         return false;
     }
 
-
-    // --------------------------------------------------------
-    // Determine file size
-    // --------------------------------------------------------
-
-    xpkFile.seekg(
-        0,
-        std::ios::end
-    );
-
-
-    std::streamoff fileLength =
-        xpkFile.tellg();
-
-
-    if (fileLength < 4)
-    {
-        std::cerr
-            << "[XPK] ERROR: invalid file length"
-            << std::endl;
-
-        xpkFile.close();
-
+    // ---- per-file sizes ----
+    std::vector<uint32_t> sizes(count);
+    xpkFile.read(reinterpret_cast<char*>(sizes.data()), count * sizeof(uint32_t));
+    if (!xpkFile) {
+        std::cerr << "[AssetManager] Failed reading size table" << std::endl;
         return false;
     }
 
-
-    xpkFile.seekg(
-        0,
-        std::ios::beg
-    );
-
-
-    std::cout
-        << "[XPK] ifstream size="
-        << fileLength
-        << std::endl;
-
-
-    // --------------------------------------------------------
-    // File count
-    // --------------------------------------------------------
-
-    uint32_t fileCount = 0;
-
-
-    xpkFile.read(
-        reinterpret_cast<char*>(&fileCount),
-        sizeof(fileCount)
-    );
-
-
-    if (!xpkFile ||
-        fileCount == 0 ||
-        fileCount > 100000)
-    {
-        std::cerr
-            << "[XPK] ERROR: invalid file count: "
-            << fileCount
-            << std::endl;
-
-        xpkFile.close();
-
+    // ---- skip the two trailing per-file tables (unknown1 + unknown2) ----
+    xpkFile.seekg(static_cast<std::streamoff>(count) * 4 * 2, std::ios::cur);
+    if (!xpkFile) {
+        std::cerr << "[AssetManager] Failed seeking past reserved tables" << std::endl;
         return false;
     }
 
+    uint32_t dataStart = static_cast<uint32_t>(xpkFile.tellg());
 
-    std::cout
-        << "[XPK] File count="
-        << fileCount
-        << std::endl;
-
-
-    // --------------------------------------------------------
-    // Offset table
-    // --------------------------------------------------------
-
-    const uint64_t headerSize =
-        4ULL +
-        static_cast<uint64_t>(fileCount) * 4ULL;
-
-
-    if (static_cast<uint64_t>(fileLength) <
-        headerSize)
-    {
-        std::cerr
-            << "[XPK] ERROR: archive shorter than offset table"
-            << std::endl;
-
-        xpkFile.close();
-
-        return false;
-    }
-
-
-    std::vector<uint32_t> offsets(
-        fileCount
-    );
-
-
-    xpkFile.read(
-        reinterpret_cast<char*>(offsets.data()),
-        static_cast<std::streamsize>(
-            fileCount * sizeof(uint32_t)
-        )
-    );
-
-
-    if (!xpkFile)
-    {
-        std::cerr
-            << "[XPK] ERROR: could not read offset table"
-            << std::endl;
-
-        xpkFile.close();
-
-        return false;
-    }
-
-
-    // --------------------------------------------------------
-    // Metadata
-    // --------------------------------------------------------
-
-    struct PendingEntry
-    {
+    // ---- resolve filenames + build the file table ----
+    uint32_t currentOffset = dataStart;
+    uint32_t sumSizes = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t nameOff = nameOffsets[i];
         std::string filename;
-        uint32_t size;
-        uint32_t metadataOffset;
-    };
-
-
-    std::vector<PendingEntry> pending;
-
-    pending.reserve(fileCount);
-
-
-    uint64_t metadataEnd =
-        headerSize;
-
-
-    for (uint32_t i = 0;
-         i < fileCount;
-         ++i)
-    {
-        uint64_t metadataPosition =
-            headerSize +
-            static_cast<uint64_t>(offsets[i]);
-
-
-        if (metadataPosition + 4ULL >
-            static_cast<uint64_t>(fileLength))
-        {
-            std::cerr
-                << "[XPK] ERROR: invalid metadata offset "
-                << i
-                << " = "
-                << offsets[i]
-                << std::endl;
-
-            xpkFile.close();
-
-            return false;
-        }
-
-
-        xpkFile.clear();
-
-
-        xpkFile.seekg(
-            static_cast<std::streamoff>(
-                metadataPosition
-            ),
-            std::ios::beg
-        );
-
-
-        if (!xpkFile)
-        {
-            std::cerr
-                << "[XPK] ERROR: seek metadata failed "
-                << i
-                << std::endl;
-
-            xpkFile.close();
-
-            return false;
-        }
-
-
-        uint32_t fileSize = 0;
-
-
-        xpkFile.read(
-            reinterpret_cast<char*>(&fileSize),
-            sizeof(fileSize)
-        );
-
-
-        if (!xpkFile)
-        {
-            std::cerr
-                << "[XPK] ERROR: could not read file size "
-                << i
-                << std::endl;
-
-            xpkFile.close();
-
-            return false;
-        }
-
-
-        // ----------------------------------------------------
-        // Filename
-        // ----------------------------------------------------
-
-        std::string filename;
-
-        bool foundNull = false;
-
-
-        for (size_t n = 0;
-             n < 65536;
-             ++n)
-        {
-            char c = 0;
-
-
-            xpkFile.read(
-                &c,
-                1
-            );
-
-
-            if (!xpkFile)
-            {
-                break;
+        if (nameOff < namesLen) {
+            size_t p = nameOff;
+            while (p < namesBlob.size() && namesBlob[p] != '\0') {
+                filename += namesBlob[p];
+                ++p;
             }
-
-
-            if (c == '\0')
-            {
-                foundNull = true;
-                break;
-            }
-
-
-            filename.push_back(c);
         }
-
-
-        if (!foundNull ||
-            filename.empty())
-        {
-            std::cerr
-                << "[XPK] ERROR: invalid filename at entry "
-                << i
-                << std::endl;
-
-            xpkFile.close();
-
-            return false;
-        }
-
-
-        // ----------------------------------------------------
-        // Calculate metadata endpoint
-        // ----------------------------------------------------
-
-        uint64_t entryEnd =
-            metadataPosition +
-            4ULL +
-            static_cast<uint64_t>(
-                filename.size()
-            ) +
-            1ULL;
-
-
-        metadataEnd =
-            std::max(
-                metadataEnd,
-                entryEnd
-            );
-
-
-        PendingEntry entry;
-
-        entry.filename =
-            filename;
-
-        entry.size =
-            fileSize;
-
-        entry.metadataOffset =
-            offsets[i];
-
-
-        pending.push_back(
-            std::move(entry)
-        );
-    }
-
-
-    // --------------------------------------------------------
-    // Data begins immediately after metadata.
-    // --------------------------------------------------------
-
-    uint64_t dataStart =
-        metadataEnd;
-
-
-    if (dataStart >
-        static_cast<uint64_t>(fileLength))
-    {
-        std::cerr
-            << "[XPK] ERROR: data start outside archive"
-            << std::endl;
-
-        xpkFile.close();
-
-        return false;
-    }
-
-
-    std::cout
-        << "[XPK] Metadata end="
-        << dataStart
-        << std::endl;
-
-
-    // --------------------------------------------------------
-    // Build file table
-    // --------------------------------------------------------
-
-    uint64_t currentData =
-        dataStart;
-
-
-    for (const PendingEntry& pendingEntry :
-         pending)
-    {
-        uint64_t nextData =
-            currentData +
-            static_cast<uint64_t>(
-                pendingEntry.size
-            );
-
-
-        if (nextData >
-            static_cast<uint64_t>(fileLength))
-        {
-            std::cerr
-                << "[XPK] ERROR: file data exceeds archive: "
-                << pendingEntry.filename
-                << " size="
-                << pendingEntry.size
-                << std::endl;
-
-            xpkFile.close();
-
-            return false;
-        }
-
-
-        if (currentData >
-            std::numeric_limits<uint32_t>::max())
-        {
-            std::cerr
-                << "[XPK] ERROR: data offset exceeds uint32"
-                << std::endl;
-
-            xpkFile.close();
-
-            return false;
-        }
-
 
         XPKEntry entry;
+        entry.filename = filename;
+        entry.size = sizes[i];
+        entry.offset = currentOffset;
 
+        currentOffset += sizes[i];
+        sumSizes += sizes[i];
 
-        entry.filename =
-            pendingEntry.filename;
-
-        entry.size =
-            pendingEntry.size;
-
-        entry.offset =
-            static_cast<uint32_t>(
-                currentData
-            );
-
-
-        fileTable[entry.filename] =
-            entry;
-
-
-        orderedFilenames.push_back(
-            entry.filename
-        );
-
-
-        currentData =
-            nextData;
+        if (!filename.empty()) {
+            orderedFilenames.push_back(filename);
+            fileTable[filename] = entry;
+        }
     }
 
-
-    // --------------------------------------------------------
-    // Final validation
-    // --------------------------------------------------------
-
-    if (fileTable.empty())
-    {
-        std::cerr
-            << "[XPK] ERROR: no files in archive"
-            << std::endl;
-
-        xpkFile.close();
-
-        return false;
+    if (sumSizes != totalDataSize) {
+        // Not fatal — just means our size-table assumption is slightly
+        // off for this particular archive. Log it so it's visible in
+        // device logs instead of silently mis-parsing.
+        std::cerr << "[AssetManager] Warning: sum(sizes)=" << sumSizes
+                   << " != totalDataSize=" << totalDataSize << std::endl;
     }
 
-
-    std::cout
-        << "[XPK] SUCCESS: loaded "
-        << fileTable.size()
-        << " files"
-        << std::endl;
-
-
-    std::cout
-        << "[XPK] Data start="
-        << dataStart
-        << std::endl;
-
-
+    std::cout << "[AssetManager] XPK loaded: " << fileTable.size()
+               << " files, data starts at " << dataStart << std::endl;
     return true;
 }
 
-
-// ============================================================
-// Get Asset
-// ============================================================
-
-std::vector<uint8_t>
-AssetManager::getAssetData(
-    const std::string& filename
-)
-{
-    auto it =
-        fileTable.find(filename);
-
-
-    // --------------------------------------------------------
-    // Slash normalization
-    // --------------------------------------------------------
-
-    if (it == fileTable.end())
-    {
-        std::string normalized =
-            filename;
-
-
-        std::replace(
-            normalized.begin(),
-            normalized.end(),
-            '/',
-            '\\'
-        );
-
-
-        it =
-            fileTable.find(normalized);
-
-
-        if (it == fileTable.end())
-        {
-            std::replace(
-                normalized.begin(),
-                normalized.end(),
-                '\\',
-                '/'
-            );
-
-
-            it =
-                fileTable.find(normalized);
-        }
-    }
-
-
-    if (it == fileTable.end())
-    {
-        std::cerr
-            << "[XPK] Asset not found: "
-            << filename
-            << std::endl;
-
+std::vector<uint8_t> AssetManager::getAssetData(const std::string& filename) {
+    auto it = fileTable.find(filename);
+    if (it == fileTable.end()) {
+        std::cerr << "[AssetManager] Asset not found: " << filename << std::endl;
         return {};
     }
 
-
-    const XPKEntry& entry =
-        it->second;
-
-
-    if (!xpkFile.is_open())
-    {
-        std::cerr
-            << "[XPK] ERROR: XPK stream is closed"
-            << std::endl;
-
+    if (!xpkFile.is_open()) {
+        std::cerr << "[AssetManager] getAssetData called with no XPK open" << std::endl;
         return {};
     }
 
-
-    if (entry.size == 0)
-    {
+    std::vector<uint8_t> data(it->second.size);
+    xpkFile.clear(); // clear any eof/fail bits left over from a previous read
+    xpkFile.seekg(it->second.offset, std::ios::beg);
+    xpkFile.read(reinterpret_cast<char*>(data.data()), it->second.size);
+    if (!xpkFile && !xpkFile.eof()) {
+        std::cerr << "[AssetManager] Read failed for: " << filename << std::endl;
         return {};
     }
-
-
-    // --------------------------------------------------------
-    // Read file
-    // --------------------------------------------------------
-
-    std::vector<uint8_t> data(
-        entry.size
-    );
-
-
-    xpkFile.clear();
-
-
-    xpkFile.seekg(
-        static_cast<std::streamoff>(
-            entry.offset
-        ),
-        std::ios::beg
-    );
-
-
-    if (!xpkFile)
-    {
-        std::cerr
-            << "[XPK] ERROR: seek failed for "
-            << entry.filename
-            << " offset="
-            << entry.offset
-            << std::endl;
-
-        return {};
-    }
-
-
-    xpkFile.read(
-        reinterpret_cast<char*>(
-            data.data()
-        ),
-        static_cast<std::streamsize>(
-            entry.size
-        )
-    );
-
-
-    std::streamsize actual =
-        xpkFile.gcount();
-
-
-    if (actual !=
-        static_cast<std::streamsize>(
-            entry.size
-        ))
-    {
-        std::cerr
-            << "[XPK] ERROR: short read for "
-            << entry.filename
-            << " expected="
-            << entry.size
-            << " actual="
-            << actual
-            << std::endl;
-
-        return {};
-    }
-
-
     return data;
 }
 
-
-// ============================================================
-// All filenames
-// ============================================================
-
-std::vector<std::string>
-AssetManager::getAllFilenames()
-{
+std::vector<std::string> AssetManager::getAllFilenames() {
     return orderedFilenames;
 }

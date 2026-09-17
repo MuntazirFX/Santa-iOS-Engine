@@ -1,41 +1,28 @@
 name: SantaEngine
-
 options:
   bundleIdPrefix: com.muntazirfx
-
 targets:
   SantaEngine:
     type: application
     platform: iOS
     deploymentTarget: "14.0"
-
     sources:
-      - path: ios
+      - ios
       - path: src
         excludes:
           - "main.cpp"
-
-    resources:
       - path: assets/xmas.xpk
-
+        buildPhase: resources
     settings:
       INFOPLIST_FILE: ios/Info.plist
-      PRODUCT_BUNDLE_IDENTIFIER: com.muntazirfx.santaengine
-
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGNING_REQUIRED: NO
-
       HEADER_SEARCH_PATHS:
-        - "$(SRCROOT)/src"
-
+        - $(SRCROOT)/src
       CLANG_CXX_LANGUAGE_STANDARD: "c++17"
       CLANG_CXX_LIBRARY: "libc++"
-
       MTL_FAST_MATH: "YES"
-
-      OTHER_LDFLAGS:
-        - "-lz"
-
+      OTHER_LDFLAGS: "-lz"
     dependencies:
       - sdk: UIKit.framework
       - sdk: Metal.framework
