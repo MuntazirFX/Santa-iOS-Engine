@@ -8,11 +8,9 @@
 
 struct Vec3 { float x, y, z; };
 
-// ============ MeshData Implementation ============
 @implementation MeshData
 @end
 
-// ============ GameEngine Implementation ============
 @implementation GameEngine
 
 + (NSData *)loadAssetNamed:(NSString *)name {
@@ -35,7 +33,10 @@ struct Vec3 { float x, y, z; };
     if (decompressed.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
-    NSLog(@"[Diag] Tokens: %lu", (unsigned long)tokens.size());
+    
+    // ============ DEBUG INFO STRING ============
+    NSMutableString *dbg = [NSMutableString string];
+    [dbg appendFormat:@"Tokens: %lu\n", (unsigned long)tokens.size()];
     
     std::vector<float> allVerts;
     std::vector<float> allUVs;
@@ -85,7 +86,7 @@ struct Vec3 { float x, y, z; };
             if (meshVerts && meshVerts->size() >= 3) {
                 int vc = (int)(meshVerts->size() / 3);
                 
-                // ============ DIAGNOSTIC: Bounding box ============
+                // ============ BBOX ============
                 float minX = 1e9, maxX = -1e9;
                 float minY = 1e9, maxY = -1e9;
                 float minZ = 1e9, maxZ = -1e9;
@@ -99,12 +100,11 @@ struct Vec3 { float x, y, z; };
                 }
                 
                 meshCount++;
-                NSLog(@"[Diag] Mesh %d: %d v, skin blocks=%d", meshCount, vc, skinBlocksInThisMesh);
-                NSLog(@"[Diag]   BBox X: %.3f to %.3f (size %.3f)", minX, maxX, maxX - minX);
-                NSLog(@"[Diag]   BBox Y: %.3f to %.3f (size %.3f)", minY, maxY, maxY - minY);
-                NSLog(@"[Diag]   BBox Z: %.3f to %.3f (size %.3f)", minZ, maxZ, maxZ - minZ);
+                [dbg appendFormat:@"M%d: %dv skin=%d\n", meshCount, vc, skinBlocksInThisMesh];
+                [dbg appendFormat:@" X%.1f..%.1f\n", minX, maxX];
+                [dbg appendFormat:@" Y%.1f..%.1f\n", minY, maxY];
+                [dbg appendFormat:@" Z%.1f..%.1f\n", minZ, maxZ];
                 
-                // ============ Render RAW (no transform) ============
                 int baseVertex = (int)(allVerts.size() / 3);
                 
                 for (int v = 0; v < vc; v++) {
@@ -112,7 +112,6 @@ struct Vec3 { float x, y, z; };
                     allVerts.push_back((*meshVerts)[v*3+1]);
                     allVerts.push_back((*meshVerts)[v*3+2]);
                     
-                    // Color per mesh
                     float colors[8][3] = {
                         {1.0, 0.3, 0.3}, {0.3, 1.0, 0.3}, {0.3, 0.3, 1.0}, {1.0, 1.0, 0.3},
                         {1.0, 0.3, 1.0}, {0.3, 1.0, 1.0}, {1.0, 0.6, 0.2}, {0.6, 0.3, 1.0}
@@ -160,10 +159,7 @@ struct Vec3 { float x, y, z; };
         }
     }
     
-    NSLog(@"[Diag] === SUMMARY ===");
-    NSLog(@"[Diag] Total meshes: %d", meshCount);
-    NSLog(@"[Diag] Total skin blocks: %d", skinCount);
-    NSLog(@"[Diag] Total vertices: %d", (int)(allVerts.size() / 3));
+    [dbg appendFormat:@"TOTAL: %dM %dSKIN", meshCount, skinCount];
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -175,6 +171,7 @@ struct Vec3 { float x, y, z; };
     mesh.uvs = [NSMutableData dataWithBytes:allUVs.data() length:allUVs.size() * 4];
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = offset;
+    mesh.debugInfo = dbg;
     
     return mesh;
 }
