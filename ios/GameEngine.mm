@@ -33,9 +33,10 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
+    // FIX 1: TRANSPOSED — column-major read (was row-major)
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
-        for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
+        for (int i = 0; i < 16; i++) r.m[i % 4][i / 4] = f[i];
         return r;
     }
 };
@@ -72,7 +73,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
     if (decompressed.size() < 16) return nil;
     
-    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 8000);
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
     // World transform stack — one entry per open Frame scope
@@ -132,12 +133,30 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // Texture filename
-        if (tok.type == 1 && tok.name == "TextureFilename" && foundTexture.empty()) {
+        // FIX 2: Texture selection — prefer Santa, skip plattformen/objects/misc
+        if (tok.type == 1 && tok.name == "TextureFilename") {
             for (size_t j = i + 1; j < std::min(tokens.size(), i + 5); j++) {
                 if (tokens[j].type == 2 && !tokens[j].name.empty()) {
-                    foundTexture = tokens[j].name;
-                    break;
+                    std::string fn = tokens[j].name;
+                    std::string lower = fn;
+                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+                    
+                    bool isSanta = (lower.find("weihnachtsmann") != std::string::npos ||
+                                    lower.find("weihnacht") != std::string::npos ||
+                                    lower.find("kopf") != std::string::npos ||
+                                    lower.find("koerper") != std::string::npos ||
+                                    lower.find("hand") != std::string::npos ||
+                                    lower.find("santa") != std::string::npos);
+                    bool isPlatform = (lower.find("plattform") != std::string::npos ||
+                                       lower.find("objects") != std::string::npos ||
+                                       lower.find("misc") != std::string::npos);
+                    
+                    if (isSanta) {
+                        foundTexture = fn;
+                        break;
+                    } else if (foundTexture.empty() && !isPlatform) {
+                        foundTexture = fn;
+                    }
                 }
             }
             continue;
