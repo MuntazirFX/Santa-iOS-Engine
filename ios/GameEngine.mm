@@ -6,46 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-// ============ C++ Helpers ============
 struct Vec3 { float x, y, z; };
-
-struct Mat4 {
-    float m[4][4];
-    static Mat4 identity() {
-        Mat4 r{};
-        for (int i = 0; i < 4; i++)
-            for (int j = 0; j < 4; j++)
-                r.m[i][j] = (i == j) ? 1.0f : 0.0f;
-        return r;
-    }
-    static Mat4 fromFloats16(const std::vector<float>& f) {
-        Mat4 r{};
-        for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
-        return r;
-    }
-};
-
-static Mat4 mulMat(const Mat4& a, const Mat4& b) {
-    Mat4 r{};
-    for (int i = 0; i < 4; i++)
-        for (int j = 0; j < 4; j++) {
-            float s = 0;
-            for (int k = 0; k < 4; k++) s += a.m[i][k] * b.m[k][j];
-            r.m[i][j] = s;
-        }
-    return r;
-}
-
-static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
-    float x = v.x*M.m[0][0] + v.y*M.m[1][0] + v.z*M.m[2][0] + M.m[3][0];
-    float y = v.x*M.m[0][1] + v.y*M.m[1][1] + v.z*M.m[2][1] + M.m[3][1];
-    float z = v.x*M.m[0][2] + v.y*M.m[1][2] + v.z*M.m[2][2] + M.m[3][2];
-    float w = v.x*M.m[0][3] + v.y*M.m[1][3] + v.z*M.m[2][3] + M.m[3][3];
-    if (std::fabs(w) > 1e-6f && std::fabs(w - 1.0f) > 1e-6f) {
-        x /= w; y /= w; z /= w;
-    }
-    return { x, y, z };
-}
 
 // ============ MeshData Implementation ============
 @implementation MeshData
@@ -74,27 +35,26 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     if (decompressed.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
-    NSLog(@"[Test] Tokens: %lu", (unsigned long)tokens.size());
-    
-    // ============ NO TRANSFORMS — just raw vertices ============
+    NSLog(@"[Diag] Tokens: %lu", (unsigned long)tokens.size());
     
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
     std::vector<uint32_t> allIdx;
-    std::string foundTexture;
+    
     int meshCount = 0;
+    int skinCount = 0;
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         
-        // Mesh
         if (tok.type == 1 && tok.name == "Mesh") {
             int depth = 0;
             bool entered = false;
             const std::vector<float>* meshVerts = nullptr;
             const std::vector<int>* meshFaces = nullptr;
             const std::vector<float>* meshUVs = nullptr;
+            int skinBlocksInThisMesh = 0;
             
             for (size_t j = i + 1; j < tokens.size(); j++) {
                 if (tokens[j].type == 10) { depth++; entered = true; continue; }
@@ -117,31 +77,47 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                         if (tokens[k].type == 7) { meshUVs = &tokens[k].floatList; break; }
                     }
                 }
+                if (tokens[j].type == 1 && tokens[j].name == "SkinWeights") {
+                    skinBlocksInThisMesh++;
+                }
             }
             
             if (meshVerts && meshVerts->size() >= 3) {
-                int baseVertex = (int)(allVerts.size() / 3);
                 int vc = (int)(meshVerts->size() / 3);
                 
-                // Colors per mesh (mesh index based)
-                float colors[8][3] = {
-                    {1.0, 0.3, 0.3},  // 1: Red
-                    {0.3, 1.0, 0.3},  // 2: Green
-                    {0.3, 0.3, 1.0},  // 3: Blue
-                    {1.0, 1.0, 0.3},  // 4: Yellow
-                    {1.0, 0.3, 1.0},  // 5: Magenta
-                    {0.3, 1.0, 1.0},  // 6: Cyan
-                    {1.0, 0.6, 0.2},  // 7: Orange
-                    {0.6, 0.3, 1.0},  // 8: Purple
-                };
-                float *c = colors[meshCount % 8];
+                // ============ DIAGNOSTIC: Bounding box ============
+                float minX = 1e9, maxX = -1e9;
+                float minY = 1e9, maxY = -1e9;
+                float minZ = 1e9, maxZ = -1e9;
+                for (int v = 0; v < vc; v++) {
+                    float x = (*meshVerts)[v*3];
+                    float y = (*meshVerts)[v*3+1];
+                    float z = (*meshVerts)[v*3+2];
+                    if (x < minX) minX = x; if (x > maxX) maxX = x;
+                    if (y < minY) minY = y; if (y > maxY) maxY = y;
+                    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+                }
                 
-                // RAW vertices — no transform!
+                meshCount++;
+                NSLog(@"[Diag] Mesh %d: %d v, skin blocks=%d", meshCount, vc, skinBlocksInThisMesh);
+                NSLog(@"[Diag]   BBox X: %.3f to %.3f (size %.3f)", minX, maxX, maxX - minX);
+                NSLog(@"[Diag]   BBox Y: %.3f to %.3f (size %.3f)", minY, maxY, maxY - minY);
+                NSLog(@"[Diag]   BBox Z: %.3f to %.3f (size %.3f)", minZ, maxZ, maxZ - minZ);
+                
+                // ============ Render RAW (no transform) ============
+                int baseVertex = (int)(allVerts.size() / 3);
+                
                 for (int v = 0; v < vc; v++) {
                     allVerts.push_back((*meshVerts)[v*3]);
                     allVerts.push_back((*meshVerts)[v*3+1]);
                     allVerts.push_back((*meshVerts)[v*3+2]);
                     
+                    // Color per mesh
+                    float colors[8][3] = {
+                        {1.0, 0.3, 0.3}, {0.3, 1.0, 0.3}, {0.3, 0.3, 1.0}, {1.0, 1.0, 0.3},
+                        {1.0, 0.3, 1.0}, {0.3, 1.0, 1.0}, {1.0, 0.6, 0.2}, {0.6, 0.3, 1.0}
+                    };
+                    float *c = colors[(meshCount - 1) % 8];
                     allColors.push_back(c[0]);
                     allColors.push_back(c[1]);
                     allColors.push_back(c[2]);
@@ -179,11 +155,15 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                     }
                 }
                 
-                meshCount++;
-                NSLog(@"[Test] Mesh %d: %d v (RAW, no transform)", meshCount, vc);
+                skinCount += skinBlocksInThisMesh;
             }
         }
     }
+    
+    NSLog(@"[Diag] === SUMMARY ===");
+    NSLog(@"[Diag] Total meshes: %d", meshCount);
+    NSLog(@"[Diag] Total skin blocks: %d", skinCount);
+    NSLog(@"[Diag] Total vertices: %d", (int)(allVerts.size() / 3));
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -196,16 +176,10 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = offset;
     
-    NSLog(@"[Test] Final: %d meshes, %d v, %d f (RAW)",
-          meshCount, mesh.vertexCount, mesh.faceCount);
-    
     return mesh;
 }
 
-+ (NSString *)scanForSantaModel {
-    return @"Disabled";
-}
-
++ (NSString *)scanForSantaModel { return @"Disabled"; }
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset {
     return [self extractSantaWithTransforms:offset];
 }
