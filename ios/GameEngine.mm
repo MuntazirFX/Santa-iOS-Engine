@@ -133,7 +133,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // Texture filename — prefer Santa textures, skip platform/background
+        // Texture filename — ONLY accept Santa textures
         if (tok.type == 1 && tok.name == "TextureFilename") {
             for (size_t j = i + 1; j < std::min(tokens.size(), i + 5); j++) {
                 if (tokens[j].type == 2 && !tokens[j].name.empty()) {
@@ -141,17 +141,14 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                     std::string lower = fn;
                     std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
                     
-                    bool isPlatform = (lower.find("plattform") != std::string::npos ||
-                                       lower.find("objects") != std::string::npos ||
-                                       lower.find("misc") != std::string::npos ||
-                                       lower.find("dach") != std::string::npos ||
-                                       lower.find("haus") != std::string::npos);
+                    // ONLY Santa-related textures
+                    bool isSanta = (lower.find("weihnachtsman") != std::string::npos ||
+                                    lower.find("weihnacht") != std::string::npos ||
+                                    lower.find("santa") != std::string::npos);
                     
-                    if (!isPlatform) {
+                    if (isSanta && foundTexture.empty()) {
                         foundTexture = fn;
                         break;
-                    } else if (foundTexture.empty()) {
-                        foundTexture = fn;
                     }
                 }
             }
@@ -239,7 +236,11 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 NSLog(@"[Santa] Mesh %d: %d v (total %d v, %d idx)",
                       meshCount, vc, (int)(allVerts.size()/3), (int)allIdx.size());
                 
-                // NOTE: Break hata diya — saare meshes lene hain
+                // Sirf PEHLA mesh (Santa's body) — Christmas tree skip
+                if (meshCount >= 1) {
+                    NSLog(@"[Santa] Stopping after first mesh");
+                    break;
+                }
             }
         }
     }
