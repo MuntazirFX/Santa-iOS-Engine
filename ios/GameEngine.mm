@@ -6,22 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-@implementation MeshData
-@end
-
-@implementation GameEngine
-
-+ (NSData *)loadAssetNamed:(NSString *)name {
-    NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    if (!p) return nil;
-    AssetManager am;
-    if (!am.loadXPK([p UTF8String])) return nil;
-    std::vector<uint8_t> d = am.getAssetData([name UTF8String]);
-    if (d.empty()) return nil;
-    return [NSData dataWithBytes:d.data() length:d.size()];
-}
-
-// ============ Transform helpers ============
+// ============ C++ Helpers (OUTSIDE @implementation!) ============
 struct Vec3 { float x, y, z; };
 
 struct Mat4 {
@@ -33,11 +18,12 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
-    // FIX 1: TRANSPOSED — column-major read (was row-major)
-static Mat4 fromFloats16(const std::vector<float>& f) {
-    Mat4 r{};
-    for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];  // ← Yeh row-major hai (sahi hai)
-    return r;
+    // Row-major read (matches 3:11 working state)
+    static Mat4 fromFloats16(const std::vector<float>& f) {
+        Mat4 r{};
+        for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
+        return r;
+    }
 };
 
 static Mat4 mulMat(const Mat4& a, const Mat4& b) {
@@ -62,7 +48,23 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     return { x, y, z };
 }
 
-// ============ Extract Santa with frame transforms applied ============
+// ============ MeshData Implementation ============
+@implementation MeshData
+@end
+
+// ============ GameEngine Implementation ============
+@implementation GameEngine
+
++ (NSData *)loadAssetNamed:(NSString *)name {
+    NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    if (!p) return nil;
+    AssetManager am;
+    if (!am.loadXPK([p UTF8String])) return nil;
+    std::vector<uint8_t> d = am.getAssetData([name UTF8String]);
+    if (d.empty()) return nil;
+    return [NSData dataWithBytes:d.data() length:d.size()];
+}
+
 + (MeshData *)extractSantaWithTransforms:(NSUInteger)offset {
     NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
@@ -75,11 +77,10 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
-    // World transform stack — one entry per open Frame scope
     std::vector<Mat4> worldStack;
     worldStack.push_back(Mat4::identity());
     
-    std::vector<char> braceKind;   // 'F' = Frame brace, 'O' = other
+    std::vector<char> braceKind;
     bool pendingFrame = false;
     
     std::vector<float> allVerts;
@@ -119,7 +120,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // FrameTransformMatrix — read 16 floats
+        // FrameTransformMatrix — read 16 floats, swap multiply order
         if (tok.type == 1 && tok.name == "FrameTransformMatrix") {
             for (size_t j = i + 1; j < std::min(tokens.size(), i + 6); j++) {
                 if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
@@ -143,11 +144,10 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             continue;
         }
         
-        // Mesh — extract vertices + faces + UVs, applying current world transform
+        // Mesh
         if (tok.type == 1 && tok.name == "Mesh") {
             Mat4 world = worldStack.back();
             
-            // Walk inside the Mesh block
             int depth = 0;
             bool entered = false;
             const std::vector<float>* meshVerts = nullptr;
@@ -164,7 +164,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 if (tokens[j].type == 7 && !meshVerts) { meshVerts = &tokens[j].floatList; continue; }
                 if (tokens[j].type == 6 && meshVerts && !meshFaces) { meshFaces = &tokens[j].intList; continue; }
                 if (tokens[j].type == 1 && tokens[j].name == "MeshTextureCoords") {
-                    // Find the FLOAT_LIST inside
                     int d2 = 0; bool e2 = false;
                     for (size_t k = j + 1; k < tokens.size(); k++) {
                         if (tokens[k].type == 10) { d2++; e2 = true; continue; }
@@ -182,7 +181,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 int baseVertex = (int)(allVerts.size() / 3);
                 int vc = (int)(meshVerts->size() / 3);
                 
-                // Apply world transform to each vertex
                 for (int v = 0; v < vc; v++) {
                     Vec3 local{ (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
                     Vec3 worldPos = transformPoint(local, world);
@@ -191,7 +189,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                     allVerts.push_back(worldPos.z);
                 }
                 
-                // Faces
                 if (meshFaces) {
                     const auto& raw = *meshFaces;
                     size_t p = 0;
@@ -215,7 +212,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                     }
                 }
                 
-                // UVs
                 if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
                     allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
                 } else {
@@ -251,7 +247,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     return mesh;
 }
 
-// ============ Scanner (kept for reference) ============
 + (NSString *)scanForSantaModel {
     NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
@@ -270,7 +265,6 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     return [NSString stringWithFormat:@"Found %zu xof files", offsets.size()];
 }
 
-// ============ Single mesh extractor (fallback) ============
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset {
     return [self extractSantaWithTransforms:offset];
 }
