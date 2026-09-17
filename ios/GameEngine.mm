@@ -126,7 +126,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
                     Mat4 local = Mat4::fromFloats16(tokens[j].floatList);
                     Mat4 parentWorld = worldStack.back();
-                    worldStack.back() = mulMat(parentWorld, local);
+                    worldStack.back() = mulMat(local, parentWorld);
                     break;
                 }
             }
@@ -222,9 +222,14 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 }
                 
                 meshCount++;
-                NSLog(@"[Santa] Mesh %d: %d v (total %d v, %d idx)",
-                      meshCount, vc, (int)(allVerts.size()/3), (int)allIdx.size());
-            }
+NSLog(@"[Santa] Mesh %d: %d v (total %d v, %d idx)",
+      meshCount, vc, (int)(allVerts.size()/3), (int)allIdx.size());
+
+// Sirf PEHLA mesh lein
+if (meshCount >= 1) {
+    NSLog(@"[Santa] Stopping after first mesh");
+    break;
+}
         }
     }
     
