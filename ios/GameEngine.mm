@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <cmath>
 
-// ============ C++ Helpers (OUTSIDE @implementation!) ============
+// ============ C++ Helpers ============
 struct Vec3 { float x, y, z; };
 
 struct Mat4 {
@@ -18,7 +18,6 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
-    // Row-major read
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
         for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
@@ -75,13 +74,9 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     if (decompressed.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
-    NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
+    NSLog(@"[Test] Tokens: %lu", (unsigned long)tokens.size());
     
-    std::vector<Mat4> worldStack;
-    worldStack.push_back(Mat4::identity());
-    
-    std::vector<char> braceKind;
-    bool pendingFrame = false;
+    // ============ NO TRANSFORMS — just raw vertices ============
     
     std::vector<float> allVerts;
     std::vector<float> allUVs;
@@ -89,82 +84,12 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     std::vector<uint32_t> allIdx;
     std::string foundTexture;
     int meshCount = 0;
-    int meshesIncluded = 0;
-    int meshesSkipped = 0;
-    
-    std::string currentTexture = "";
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         
-        // Frame start
-        if (tok.type == 1 && tok.name == "Frame") {
-            pendingFrame = true;
-            continue;
-        }
-        
-        // Open brace
-        if (tok.type == 10) {
-            if (pendingFrame) {
-                worldStack.push_back(worldStack.back());
-                braceKind.push_back('F');
-                pendingFrame = false;
-            } else {
-                braceKind.push_back('O');
-            }
-            continue;
-        }
-        
-        // Close brace
-        if (tok.type == 11) {
-            if (!braceKind.empty()) {
-                char kind = braceKind.back();
-                braceKind.pop_back();
-                if (kind == 'F') worldStack.pop_back();
-            }
-            continue;
-        }
-        
-        // FrameTransformMatrix
-        if (tok.type == 1 && tok.name == "FrameTransformMatrix") {
-            for (size_t j = i + 1; j < std::min(tokens.size(), i + 6); j++) {
-                if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
-                    Mat4 local = Mat4::fromFloats16(tokens[j].floatList);
-                    Mat4 parentWorld = worldStack.back();
-                    worldStack.back() = mulMat(local, parentWorld);
-                    break;
-                }
-            }
-            continue;
-        }
-        
-        // Texture filename — update current texture
-        if (tok.type == 1 && tok.name == "TextureFilename") {
-            for (size_t j = i + 1; j < std::min(tokens.size(), i + 5); j++) {
-                if (tokens[j].type == 2 && !tokens[j].name.empty()) {
-                    currentTexture = tokens[j].name;
-                    std::string lower = currentTexture;
-                    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-                    bool isSanta = (lower.find("weihnachtsman") != std::string::npos ||
-                                    lower.find("weihnacht") != std::string::npos ||
-                                    lower.find("santa") != std::string::npos ||
-                                    lower.find("kopf") != std::string::npos ||
-                                    lower.find("koerper") != std::string::npos ||
-                                    lower.find("hand") != std::string::npos ||
-                                    lower.find("bein") != std::string::npos);
-                    if (isSanta && foundTexture.empty()) {
-                        foundTexture = currentTexture;
-                    }
-                    break;
-                }
-            }
-            continue;
-        }
-        
         // Mesh
         if (tok.type == 1 && tok.name == "Mesh") {
-            Mat4 world = worldStack.back();
-            
             int depth = 0;
             bool entered = false;
             const std::vector<float>* meshVerts = nullptr;
@@ -195,58 +120,31 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
             }
             
             if (meshVerts && meshVerts->size() >= 3) {
-                // ============ Determine category from texture ============
-                std::string lower = currentTexture;
-                std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
-                
-                bool isSanta = (lower.find("weihnachtsman") != std::string::npos ||
-                                lower.find("weihnacht") != std::string::npos ||
-                                lower.find("santa") != std::string::npos ||
-                                lower.find("kopf") != std::string::npos ||
-                                lower.find("koerper") != std::string::npos ||
-                                lower.find("hand") != std::string::npos ||
-                                lower.find("bein") != std::string::npos ||
-                                lower.find("bart") != std::string::npos ||
-                                lower.find("mantel") != std::string::npos ||
-                                lower.find("nikolaus") != std::string::npos);
-                bool isTree = (lower.find("tanne") != std::string::npos ||
-                               lower.find("baum") != std::string::npos);
-                bool isHouse = (lower.find("haus") != std::string::npos ||
-                                lower.find("dach") != std::string::npos ||
-                                lower.find("plattform") != std::string::npos ||
-                                lower.find("misc") != std::string::npos);
-                bool isMisc = (lower.find("objects") != std::string::npos);
-                
-                // SKIP: tree, house, misc — sirf Santa (ya unknown/grey) rakho
-                if (isTree || isHouse || isMisc) {
-                    meshesSkipped++;
-                    NSLog(@"[Santa] Skipping mesh (tex=%s, class=%s)",
-                          currentTexture.c_str(),
-                          isTree ? "tree" : (isHouse ? "house" : "misc"));
-                    continue;
-                }
-                
-                // Color: red if Santa texture, grey if unknown (both = Santa)
-                float r = 0.6f, g = 0.6f, b = 0.6f;   // grey
-                const char* colorLabel = "GREY (unknown = Santa)";
-                if (isSanta) {
-                    r = 1.0f; g = 0.0f; b = 0.0f;     // red
-                    colorLabel = "RED (Santa)";
-                }
-                
                 int baseVertex = (int)(allVerts.size() / 3);
                 int vc = (int)(meshVerts->size() / 3);
                 
+                // Colors per mesh (mesh index based)
+                float colors[8][3] = {
+                    {1.0, 0.3, 0.3},  // 1: Red
+                    {0.3, 1.0, 0.3},  // 2: Green
+                    {0.3, 0.3, 1.0},  // 3: Blue
+                    {1.0, 1.0, 0.3},  // 4: Yellow
+                    {1.0, 0.3, 1.0},  // 5: Magenta
+                    {0.3, 1.0, 1.0},  // 6: Cyan
+                    {1.0, 0.6, 0.2},  // 7: Orange
+                    {0.6, 0.3, 1.0},  // 8: Purple
+                };
+                float *c = colors[meshCount % 8];
+                
+                // RAW vertices — no transform!
                 for (int v = 0; v < vc; v++) {
-                    Vec3 local{ (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
-                    Vec3 worldPos = transformPoint(local, world);
-                    allVerts.push_back(worldPos.x);
-                    allVerts.push_back(worldPos.y);
-                    allVerts.push_back(worldPos.z);
+                    allVerts.push_back((*meshVerts)[v*3]);
+                    allVerts.push_back((*meshVerts)[v*3+1]);
+                    allVerts.push_back((*meshVerts)[v*3+2]);
                     
-                    allColors.push_back(r);
-                    allColors.push_back(g);
-                    allColors.push_back(b);
+                    allColors.push_back(c[0]);
+                    allColors.push_back(c[1]);
+                    allColors.push_back(c[2]);
                 }
                 
                 if (meshFaces) {
@@ -282,14 +180,10 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 }
                 
                 meshCount++;
-                meshesIncluded++;
-                NSLog(@"[Santa] Mesh %d included: %d v, color=%s (tex=%s)",
-                      meshCount, vc, colorLabel, currentTexture.c_str());
+                NSLog(@"[Test] Mesh %d: %d v (RAW, no transform)", meshCount, vc);
             }
         }
     }
-    
-    NSLog(@"[Santa] Included %d meshes, skipped %d", meshesIncluded, meshesSkipped);
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -301,32 +195,15 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
     mesh.uvs = [NSMutableData dataWithBytes:allUVs.data() length:allUVs.size() * 4];
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = offset;
-    if (!foundTexture.empty()) {
-        mesh.textureName = [NSString stringWithUTF8String:foundTexture.c_str()];
-    }
     
-    NSLog(@"[Santa] Final: %d meshes, %d v, %d f",
-          meshesIncluded, mesh.vertexCount, mesh.faceCount);
+    NSLog(@"[Test] Final: %d meshes, %d v, %d f (RAW)",
+          meshCount, mesh.vertexCount, mesh.faceCount);
     
     return mesh;
 }
 
 + (NSString *)scanForSantaModel {
-    NSString *xpkPath = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    NSData *xpkData = [NSData dataWithContentsOfFile:xpkPath];
-    if (!xpkData) return @"No XPK data";
-    
-    const uint8_t *bytes = (const uint8_t *)xpkData.bytes;
-    size_t totalSize = xpkData.length;
-    
-    std::vector<size_t> offsets;
-    for (size_t i = 0; i + 4 < totalSize; i++) {
-        if (bytes[i]=='x' && bytes[i+1]=='o' && bytes[i+2]=='f' && bytes[i+3]==' ') {
-            offsets.push_back(i);
-            i += 200;
-        }
-    }
-    return [NSString stringWithFormat:@"Found %zu xof files", offsets.size()];
+    return @"Disabled";
 }
 
 + (MeshData *)extractMeshAtOffset:(NSUInteger)offset {
