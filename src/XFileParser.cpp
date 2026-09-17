@@ -111,7 +111,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
         
         switch (tokenType) {
             case 1: {
-                // NAME — no padding
+                // NAME - no padding
                 if (offset + 4 > size) { offset = size; break; }
                 uint32_t len = readU32(data, offset);
                 offset += 4;
@@ -121,7 +121,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 break;
             }
             case 2: {
-                // STRING — 2 bytes padding after
+                // STRING - 2 bytes padding after
                 if (offset + 4 > size) { offset = size; break; }
                 uint32_t len = readU32(data, offset);
                 offset += 4;
@@ -219,7 +219,7 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 }
                 break;
             case 48: case 49: case 50:
-                // LPSTR / UNICODE / CSTRING — no padding (per Assimp)
+                // LPSTR / UNICODE / CSTRING - no padding (per Assimp)
                 if (templateDepth == 0) {
                     if (offset + 4 > size) { offset = size; break; }
                     uint32_t len = readU32(data, offset);
