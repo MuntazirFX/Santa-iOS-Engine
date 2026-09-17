@@ -1,32 +1,42 @@
 #import "GameEngine.h"
+
 #include "AssetManager.h"
 #include "XFileParser.h"
 
 #include <Foundation/Foundation.h>
+
+#include <string>
+#include <vector>
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
-#include <cstring>
-#include <string>
 #include <unordered_map>
-#include <vector>
+#include <cstring>
+
 
 // ============================================================
 // Math
 // ============================================================
 
-struct Vec3 {
-    float x, y, z;
+struct Vec3
+{
+    float x;
+    float y;
+    float z;
 };
 
-struct Mat4 {
+
+struct Mat4
+{
     float m[4][4];
 
-    static Mat4 identity() {
+    static Mat4 identity()
+    {
         Mat4 r{};
 
-        for (int i = 0; i < 4; ++i) {
-            for (int j = 0; j < 4; ++j) {
+        for (int i = 0; i < 4; ++i)
+        {
+            for (int j = 0; j < 4; ++j)
+            {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
             }
         }
@@ -34,13 +44,15 @@ struct Mat4 {
         return r;
     }
 
-    static Mat4 fromFloats16(const std::vector<float>& f) {
-        Mat4 r = identity();
+    static Mat4 fromFloats16(const std::vector<float>& f)
+    {
+        Mat4 r = Mat4::identity();
 
         if (f.size() < 16)
             return r;
 
-        for (int i = 0; i < 16; ++i) {
+        for (int i = 0; i < 16; ++i)
+        {
             r.m[i / 4][i % 4] = f[i];
         }
 
@@ -48,30 +60,32 @@ struct Mat4 {
     }
 };
 
-static Mat4 mulMat(const Mat4& a, const Mat4& b) {
+
+static Mat4 mulMat(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
 
-    for (int row = 0; row < 4; ++row) {
-        for (int col = 0; col < 4; ++col) {
-            float value = 0.0f;
+    for (int i = 0; i < 4; ++i)
+    {
+        for (int j = 0; j < 4; ++j)
+        {
+            float s = 0.0f;
 
-            for (int k = 0; k < 4; ++k) {
-                value += a.m[row][k] * b.m[k][col];
+            for (int k = 0; k < 4; ++k)
+            {
+                s += a.m[i][k] * b.m[k][j];
             }
 
-            r.m[row][col] = value;
+            r.m[i][j] = s;
         }
     }
 
     return r;
 }
 
-// DirectX .X files convention used by the original data:
-// position is treated as a row vector:
-//
-//     p' = p * M
-//
-static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
+
+static Vec3 transformPoint(const Vec3& v, const Mat4& M)
+{
     float x =
         v.x * M.m[0][0] +
         v.y * M.m[1][0] +
@@ -97,567 +111,34 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
         M.m[3][3];
 
     if (std::fabs(w) > 0.000001f &&
-        std::fabs(w - 1.0f) > 0.000001f) {
+        std::fabs(w - 1.0f) > 0.000001f)
+    {
         x /= w;
         y /= w;
         z /= w;
     }
 
-    return { x, y, z };
+    return {x, y, z};
 }
 
-static bool matrixLooksValid(const Mat4& m) {
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
-            if (!std::isfinite(m.m[r][c]))
-                return false;
-        }
-    }
-
-    return true;
-}
 
 // ============================================================
-// Skin data
+// SkinWeights
 // ============================================================
 
-struct SkinWeightsData {
+struct SkinWeightsData
+{
     std::string boneName;
+
     std::vector<int> vertexIndices;
     std::vector<float> weights;
-    Mat4 offsetMatrix = Mat4::identity();
+
+    Mat4 offsetMatrix;
 };
 
-// ============================================================
-// Internal mesh parser
-// ============================================================
-
-struct ParsedMesh {
-    std::vector<float> vertices;
-    std::vector<int> faces;
-    std::vector<float> uvs;
-    std::vector<SkinWeightsData> skins;
-};
 
 // ============================================================
-// Frame hierarchy
-// ============================================================
-
-struct FrameNode {
-    std::string name;
-    Mat4 local = Mat4::identity();
-    Mat4 world = Mat4::identity();
-
-    int parent = -1;
-    std::vector<int> children;
-};
-
-static std::string normalizeBoneName(const std::string& name) {
-    std::string result = name;
-
-    while (!result.empty() &&
-           (result.front() == '"' || result.front() == ' ')) {
-        result.erase(result.begin());
-    }
-
-    while (!result.empty() &&
-           (result.back() == '"' || result.back() == ' ')) {
-        result.pop_back();
-    }
-
-    return result;
-}
-
-// ============================================================
-// Parse Frame hierarchy
-//
-// Important:
-// The old implementation used a generic brace stack and could
-// associate transforms with the wrong frame. This implementation
-// explicitly builds Frame nodes and then calculates world matrices.
-// ============================================================
-
-static void buildFrameHierarchy(
-    const std::vector<XToken>& tokens,
-    std::vector<FrameNode>& frames,
-    std::unordered_map<std::string, Mat4>& boneWorldTransforms
-) {
-    frames.clear();
-    boneWorldTransforms.clear();
-
-    struct StackEntry {
-        int frameIndex;
-    };
-
-    std::vector<StackEntry> frameStack;
-
-    bool waitingForFrameName = false;
-    int pendingFrameIndex = -1;
-
-    for (size_t i = 0; i < tokens.size(); ++i) {
-        const XToken& t = tokens[i];
-
-        // ----------------------------------------------------
-        // Frame keyword
-        // ----------------------------------------------------
-        if (t.type == 1 && t.name == "Frame") {
-            waitingForFrameName = true;
-            pendingFrameIndex = -1;
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // Frame name
-        // ----------------------------------------------------
-        if (waitingForFrameName && t.type == 1) {
-            FrameNode node;
-            node.name = normalizeBoneName(t.name);
-
-            if (!frameStack.empty()) {
-                node.parent = frameStack.back().frameIndex;
-            }
-
-            frames.push_back(node);
-
-            int index = (int)frames.size() - 1;
-
-            if (node.parent >= 0 &&
-                node.parent < (int)frames.size()) {
-                frames[node.parent].children.push_back(index);
-            }
-
-            pendingFrameIndex = index;
-            waitingForFrameName = false;
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // Opening brace
-        // ----------------------------------------------------
-        if (t.type == 10) {
-            if (pendingFrameIndex >= 0) {
-                frameStack.push_back({ pendingFrameIndex });
-                pendingFrameIndex = -1;
-            }
-
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // FrameTransformMatrix
-        // ----------------------------------------------------
-        if (t.type == 1 &&
-            t.name == "FrameTransformMatrix") {
-
-            if (frameStack.empty())
-                continue;
-
-            int currentFrame =
-                frameStack.back().frameIndex;
-
-            for (size_t j = i + 1;
-                 j < tokens.size() && j < i + 8;
-                 ++j) {
-
-                if (tokens[j].type == 7 &&
-                    tokens[j].floatList.size() >= 16) {
-
-                    frames[currentFrame].local =
-                        Mat4::fromFloats16(tokens[j].floatList);
-
-                    break;
-                }
-            }
-
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // Closing brace
-        // ----------------------------------------------------
-        if (t.type == 11) {
-            if (!frameStack.empty()) {
-                frameStack.pop_back();
-            }
-
-            continue;
-        }
-    }
-
-    // --------------------------------------------------------
-    // Calculate world transforms recursively.
-    // --------------------------------------------------------
-
-    std::function<void(int, const Mat4&)> calculateWorld;
-
-    calculateWorld =
-        [&](int index, const Mat4& parentWorld) {
-
-        if (index < 0 ||
-            index >= (int)frames.size()) {
-            return;
-        }
-
-        FrameNode& node = frames[index];
-
-        node.world = mulMat(node.local, parentWorld);
-
-        if (!node.name.empty()) {
-            boneWorldTransforms[node.name] = node.world;
-        }
-
-        for (int child : node.children) {
-            calculateWorld(child, node.world);
-        }
-    };
-
-    Mat4 identity = Mat4::identity();
-
-    for (int i = 0; i < (int)frames.size(); ++i) {
-        if (frames[i].parent < 0) {
-            calculateWorld(i, identity);
-        }
-    }
-}
-
-// ============================================================
-// Find matching bone
-// ============================================================
-
-static const Mat4* findBoneTransform(
-    const std::unordered_map<std::string, Mat4>& bones,
-    const std::string& name
-) {
-    std::string clean = normalizeBoneName(name);
-
-    auto it = bones.find(clean);
-
-    if (it != bones.end()) {
-        return &it->second;
-    }
-
-    // Case-insensitive fallback.
-    for (const auto& pair : bones) {
-        if (pair.first.size() != clean.size())
-            continue;
-
-        bool same = true;
-
-        for (size_t i = 0; i < clean.size(); ++i) {
-            char a = pair.first[i];
-            char b = clean[i];
-
-            if (a >= 'A' && a <= 'Z')
-                a = (char)(a - 'A' + 'a');
-
-            if (b >= 'A' && b <= 'Z')
-                b = (char)(b - 'A' + 'a');
-
-            if (a != b) {
-                same = false;
-                break;
-            }
-        }
-
-        if (same)
-            return &pair.second;
-    }
-
-    return nullptr;
-}
-
-// ============================================================
-// Parse one Mesh block
-// ============================================================
-
-static ParsedMesh parseMeshBlock(
-    const std::vector<XToken>& tokens,
-    size_t meshTokenIndex
-) {
-    ParsedMesh result;
-
-    int depth = 0;
-    bool entered = false;
-    size_t endIndex = tokens.size();
-
-    const std::vector<float>* vertexList = nullptr;
-    const std::vector<int>* faceList = nullptr;
-    const std::vector<float>* uvList = nullptr;
-
-    // --------------------------------------------------------
-    // Find mesh closing brace first.
-    // --------------------------------------------------------
-
-    for (size_t j = meshTokenIndex + 1;
-         j < tokens.size();
-         ++j) {
-
-        const XToken& t = tokens[j];
-
-        if (t.type == 10) {
-            ++depth;
-            entered = true;
-            continue;
-        }
-
-        if (t.type == 11) {
-            --depth;
-
-            if (entered && depth == 0) {
-                endIndex = j;
-                break;
-            }
-
-            continue;
-        }
-    }
-
-    // --------------------------------------------------------
-    // Parse content strictly inside Mesh.
-    // --------------------------------------------------------
-
-    for (size_t j = meshTokenIndex + 1;
-         j < endIndex;
-         ++j) {
-
-        const XToken& t = tokens[j];
-
-        // First FLIST = Mesh vertices.
-        if (t.type == 7 &&
-            vertexList == nullptr) {
-
-            vertexList = &t.floatList;
-            continue;
-        }
-
-        // First ILIST after vertices = faces.
-        if (t.type == 6 &&
-            vertexList != nullptr &&
-            faceList == nullptr) {
-
-            faceList = &t.intList;
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // MeshTextureCoords
-        // ----------------------------------------------------
-
-        if (t.type == 1 &&
-            t.name == "MeshTextureCoords") {
-
-            int d = 0;
-            bool started = false;
-
-            for (size_t k = j + 1;
-                 k < endIndex;
-                 ++k) {
-
-                const XToken& u = tokens[k];
-
-                if (u.type == 10) {
-                    ++d;
-                    started = true;
-                    continue;
-                }
-
-                if (u.type == 11) {
-                    --d;
-
-                    if (started && d == 0) {
-                        j = k;
-                        break;
-                    }
-
-                    continue;
-                }
-
-                if (u.type == 7) {
-                    uvList = &u.floatList;
-                    j = k;
-                    break;
-                }
-            }
-
-            continue;
-        }
-
-        // ----------------------------------------------------
-        // SkinWeights
-        // ----------------------------------------------------
-
-        if (t.type == 1 &&
-            t.name == "SkinWeights") {
-
-            SkinWeightsData sw;
-
-            int d = 0;
-            bool started = false;
-
-            int state = 0;
-
-            for (size_t k = j + 1;
-                 k < endIndex;
-                 ++k) {
-
-                const XToken& s = tokens[k];
-
-                if (s.type == 10) {
-                    ++d;
-                    started = true;
-                    continue;
-                }
-
-                if (s.type == 11) {
-                    --d;
-
-                    if (started && d == 0) {
-                        j = k;
-                        break;
-                    }
-
-                    continue;
-                }
-
-                // Bone name
-                if (state == 0) {
-                    if (s.type == 2) {
-                        sw.boneName =
-                            normalizeBoneName(s.name);
-                        state = 1;
-                    }
-
-                    continue;
-                }
-
-                // Number of vertices
-                if (state == 1) {
-                    if (s.type == 41 ||
-                        s.type == 3) {
-                        state = 2;
-                    }
-
-                    continue;
-                }
-
-                // Vertex indices
-                if (state == 2) {
-                    if (s.type == 6) {
-                        sw.vertexIndices =
-                            s.intList;
-                        state = 3;
-                    }
-
-                    continue;
-                }
-
-                // Weights
-                if (state == 3) {
-                    if (s.type == 7) {
-                        sw.weights =
-                            s.floatList;
-                        state = 4;
-                    }
-
-                    continue;
-                }
-
-                // Offset matrix
-                if (state == 4) {
-                    if (s.type == 7 &&
-                        s.floatList.size() >= 16) {
-
-                        sw.offsetMatrix =
-                            Mat4::fromFloats16(
-                                s.floatList
-                            );
-
-                        state = 5;
-                        j = k;
-                        break;
-                    }
-                }
-            }
-
-            if (!sw.boneName.empty() &&
-                !sw.vertexIndices.empty() &&
-                !sw.weights.empty()) {
-
-                result.skins.push_back(sw);
-            }
-
-            continue;
-        }
-    }
-
-    if (vertexList != nullptr) {
-        result.vertices = *vertexList;
-    }
-
-    if (faceList != nullptr) {
-        result.faces = *faceList;
-    }
-
-    if (uvList != nullptr) {
-        result.uvs = *uvList;
-    }
-
-    return result;
-}
-
-// ============================================================
-// Build indices from X-file face list
-// ============================================================
-
-static void appendFaces(
-    const std::vector<int>& raw,
-    uint32_t baseVertex,
-    std::vector<uint32_t>& output
-) {
-    if (raw.empty())
-        return;
-
-    size_t p = 0;
-
-    while (p < raw.size()) {
-        int count = raw[p++];
-
-        if (count < 3 ||
-            count > 64 ||
-            p + (size_t)count > raw.size()) {
-            break;
-        }
-
-        // Fan triangulation.
-        for (int k = 1; k + 1 < count; ++k) {
-            int a = raw[p];
-            int b = raw[p + k];
-            int c = raw[p + k + 1];
-
-            if (a >= 0 &&
-                b >= 0 &&
-                c >= 0) {
-
-                output.push_back(
-                    (uint32_t)a + baseVertex
-                );
-
-                output.push_back(
-                    (uint32_t)b + baseVertex
-                );
-
-                output.push_back(
-                    (uint32_t)c + baseVertex
-                );
-            }
-        }
-
-        p += (size_t)count;
-    }
-}
-
-// ============================================================
-// ASSET LOADING
+// Objective-C classes
 // ============================================================
 
 @implementation MeshData
@@ -666,299 +147,1003 @@ static void appendFaces(
 @implementation LevelObject
 @end
 
+
 @implementation GameEngine
 
-+ (NSData *)loadAssetNamed:(NSString *)name {
 
+// ============================================================
+// Find XPK
+// ============================================================
+
++ (NSString *)xpkPath
+{
+    NSBundle *bundle = [NSBundle mainBundle];
+
+    // Normal bundle resource.
     NSString *path =
-        [[NSBundle mainBundle]
-        pathForResource:@"xmas"
-        ofType:@"xpk"];
+        [bundle pathForResource:@"xmas" ofType:@"xpk"];
+
+    if (path)
+    {
+        NSLog(@"[XPK] Found resource: %@", path);
+
+        NSDictionary *attrs =
+            [[NSFileManager defaultManager]
+             attributesOfItemAtPath:path
+             error:nil];
+
+        NSNumber *size = attrs[NSFileSize];
+
+        NSLog(@"[XPK] Size: %@ bytes", size);
+
+        return path;
+    }
+
+
+    // Fallback: search bundle recursively.
+    NSString *resourcePath = bundle.resourcePath;
+
+    if (resourcePath)
+    {
+        NSDirectoryEnumerator *enumerator =
+            [[NSFileManager defaultManager]
+             enumeratorAtPath:resourcePath];
+
+        NSString *file;
+
+        while ((file = [enumerator nextObject]))
+        {
+            if ([[file.pathExtension lowercaseString] isEqualToString:@"xpk"])
+            {
+                NSString *candidate =
+                    [resourcePath stringByAppendingPathComponent:file];
+
+                NSLog(@"[XPK] Recursive match: %@", candidate);
+
+                NSDictionary *attrs =
+                    [[NSFileManager defaultManager]
+                     attributesOfItemAtPath:candidate
+                     error:nil];
+
+                NSNumber *size = attrs[NSFileSize];
+
+                NSLog(@"[XPK] Recursive size: %@ bytes", size);
+
+                return candidate;
+            }
+        }
+    }
+
+    NSLog(@"[XPK] ERROR: xmas.xpk NOT FOUND in application bundle");
+
+    return nil;
+}
+
+
+// ============================================================
+// Load Asset
+// ============================================================
+
++ (NSData *)loadAssetNamed:(NSString *)name
+{
+    NSString *path = [self xpkPath];
 
     if (!path)
-        return nil;
-
-    AssetManager am;
-
-    if (!am.loadXPK([path UTF8String])) {
+    {
+        NSLog(@"[XPK] Cannot load %@ because XPK was not found", name);
         return nil;
     }
 
-    std::string requested =
-        name ? [name UTF8String] : "";
-
-    std::vector<uint8_t> data =
-        am.getAssetData(requested);
-
-    if (data.empty())
-        return nil;
-
-    return [NSData
-            dataWithBytes:data.data()
-            length:data.size()];
-}
-
-// ============================================================
-// LEVEL FILE LIST
-// ============================================================
-
-+ (NSString *)listLevelFiles {
-
-    NSString *path =
-        [[NSBundle mainBundle]
-        pathForResource:@"xmas"
-        ofType:@"xpk"];
-
-    if (!path)
-        return @"No xmas.xpk";
 
     AssetManager am;
 
     if (!am.loadXPK([path UTF8String]))
-        return @"XPK load failed";
+    {
+        NSLog(@"[XPK] AssetManager failed to open XPK");
 
-    std::vector<std::string> files =
+        return nil;
+    }
+
+
+    std::vector<std::string> filenames =
         am.getAllFilenames();
 
-    NSMutableString *output =
-        [NSMutableString string];
+    NSLog(@"[XPK] Files in archive: %lu",
+          (unsigned long)filenames.size());
 
-    for (const std::string& filename : files) {
 
-        bool level =
-            filename.find("levels\\") != std::string::npos ||
-            filename.find("levels/") != std::string::npos;
+    std::string requested =
+        [name UTF8String];
 
-        if (level) {
-            [output appendFormat:@"%s\n",
-             filename.c_str()];
+
+    std::vector<uint8_t> data =
+        am.getAssetData(requested);
+
+
+    // --------------------------------------------------------
+    // Exact match
+    // --------------------------------------------------------
+
+    if (!data.empty())
+    {
+        NSLog(@"[XPK] Loaded '%@' (%lu bytes)",
+              name,
+              (unsigned long)data.size());
+
+        return
+            [NSData dataWithBytes:data.data()
+                           length:data.size()];
+    }
+
+
+    // --------------------------------------------------------
+    // Case-insensitive / slash-normalized match
+    // --------------------------------------------------------
+
+    std::string normalizedRequested = requested;
+
+    std::replace(
+        normalizedRequested.begin(),
+        normalizedRequested.end(),
+        '/',
+        '\\'
+    );
+
+
+    for (const auto& filename : filenames)
+    {
+        std::string normalized = filename;
+
+        std::replace(
+            normalized.begin(),
+            normalized.end(),
+            '/',
+            '\\'
+        );
+
+
+        std::string a = normalized;
+        std::string b = normalizedRequested;
+
+        std::transform(
+            a.begin(),
+            a.end(),
+            a.begin(),
+            [](unsigned char c)
+            {
+                return (char)std::tolower(c);
+            }
+        );
+
+        std::transform(
+            b.begin(),
+            b.end(),
+            b.begin(),
+            [](unsigned char c)
+            {
+                return (char)std::tolower(c);
+            }
+        );
+
+
+        if (a == b)
+        {
+            std::vector<uint8_t> matched =
+                am.getAssetData(filename);
+
+            if (!matched.empty())
+            {
+                NSLog(@"[XPK] Matched '%@' -> '%s' (%lu bytes)",
+                      name,
+                      filename.c_str(),
+                      (unsigned long)matched.size());
+
+                return
+                    [NSData dataWithBytes:matched.data()
+                                   length:matched.size()];
+            }
         }
     }
 
-    return output;
+
+    NSLog(@"[XPK] Asset NOT FOUND: %@",
+          name);
+
+
+    // --------------------------------------------------------
+    // Useful diagnostic
+    // --------------------------------------------------------
+
+    NSLog(@"[XPK] First archive files:");
+
+    int printed = 0;
+
+    for (const auto& filename : filenames)
+    {
+        NSLog(@"[XPK]   %s",
+              filename.c_str());
+
+        printed++;
+
+        if (printed >= 30)
+            break;
+    }
+
+
+    return nil;
 }
 
+
 // ============================================================
-// MAIN MESH EXTRACTION
+// List Levels
 // ============================================================
 
-+ (MeshData *)extractMeshFromAsset:(NSString *)assetName {
++ (NSString *)listLevelFiles
+{
+    NSString *path = [self xpkPath];
 
-    if (!assetName)
-        return nil;
-
-    NSString *path =
-        [[NSBundle mainBundle]
-        pathForResource:@"xmas"
-        ofType:@"xpk"];
-
-    if (!path) {
-        NSLog(@"[Santa] xmas.xpk not found");
-        return nil;
+    if (!path)
+    {
+        return @"XPK load failed: xmas.xpk not found";
     }
+
 
     AssetManager am;
 
-    if (!am.loadXPK([path UTF8String])) {
-        NSLog(@"[Santa] XPK load failed");
-        return nil;
+    if (!am.loadXPK([path UTF8String]))
+    {
+        return @"XPK load failed: AssetManager could not open file";
     }
 
-    std::string filename =
-        [assetName UTF8String];
 
-    std::vector<uint8_t> compressed =
-        am.getAssetData(filename);
+    std::vector<std::string> all =
+        am.getAllFilenames();
 
-    if (compressed.empty()) {
-        NSLog(@"[Santa] Asset not found: %@",
-              assetName);
-        return nil;
-    }
 
-    NSLog(@"[Santa] Asset: %@ (%lu bytes)",
-          assetName,
-          (unsigned long)compressed.size());
+    NSMutableString *out =
+        [NSMutableString string];
 
-    // --------------------------------------------------------
-    // Decompress
-    // --------------------------------------------------------
 
-    std::vector<uint8_t> data =
-        XFileParser::decompressMSZip(
-            compressed.data(),
-            compressed.size()
+    int count = 0;
+
+
+    for (const auto& filename : all)
+    {
+        std::string lower = filename;
+
+        std::transform(
+            lower.begin(),
+            lower.end(),
+            lower.begin(),
+            [](unsigned char c)
+            {
+                return (char)std::tolower(c);
+            }
         );
 
-    if (data.empty()) {
-        NSLog(@"[Santa] Decompression failed");
+
+        if (lower.find("levels\\") != std::string::npos ||
+            lower.find("levels/") != std::string::npos)
+        {
+            [out appendFormat:@"%s\n",
+             filename.c_str()];
+
+            count++;
+        }
+    }
+
+
+    if (count == 0)
+    {
+        [out appendString:@"No levels/*.dat files found"];
+    }
+
+
+    NSLog(@"[Level] Level files found: %d",
+          count);
+
+
+    return out;
+}
+
+
+// ============================================================
+// Extract Mesh From Asset
+// ============================================================
+
++ (MeshData *)extractMeshFromAsset:(NSString *)assetName
+{
+    NSLog(@"================================================");
+    NSLog(@"[Santa] Loading asset: %@", assetName);
+    NSLog(@"================================================");
+
+
+    NSString *path = [self xpkPath];
+
+    if (!path)
+    {
+        NSLog(@"[Santa] FAILED: XPK missing");
         return nil;
     }
 
-    NSLog(@"[Santa] Decompressed: %lu bytes",
-          (unsigned long)data.size());
+
+    AssetManager am;
+
+    if (!am.loadXPK([path UTF8String]))
+    {
+        NSLog(@"[Santa] FAILED: AssetManager could not load XPK");
+        return nil;
+    }
+
+
+    std::string requested =
+        [assetName UTF8String];
+
+
+    std::vector<uint8_t> fileData =
+        am.getAssetData(requested);
+
 
     // --------------------------------------------------------
-    // Parse tokens
+    // Case-insensitive fallback
     // --------------------------------------------------------
+
+    if (fileData.empty())
+    {
+        std::vector<std::string> filenames =
+            am.getAllFilenames();
+
+
+        std::string wanted = requested;
+
+        std::replace(
+            wanted.begin(),
+            wanted.end(),
+            '/',
+            '\\'
+        );
+
+        std::transform(
+            wanted.begin(),
+            wanted.end(),
+            wanted.begin(),
+            [](unsigned char c)
+            {
+                return (char)std::tolower(c);
+            }
+        );
+
+
+        for (const auto& filename : filenames)
+        {
+            std::string candidate = filename;
+
+            std::replace(
+                candidate.begin(),
+                candidate.end(),
+                '/',
+                '\\'
+            );
+
+            std::transform(
+                candidate.begin(),
+                candidate.end(),
+                candidate.begin(),
+                [](unsigned char c)
+                {
+                    return (char)std::tolower(c);
+                }
+            );
+
+
+            if (candidate == wanted)
+            {
+                fileData =
+                    am.getAssetData(filename);
+
+                NSLog(@"[Santa] Case-insensitive asset match: %s",
+                      filename.c_str());
+
+                break;
+            }
+        }
+    }
+
+
+    if (fileData.empty())
+    {
+        NSLog(@"[Santa] FAILED: asset not found: %@",
+              assetName);
+
+        return nil;
+    }
+
+
+    NSLog(@"[Santa] Compressed file: %lu bytes",
+          (unsigned long)fileData.size());
+
+
+    // ========================================================
+    // Decompress
+    // ========================================================
+
+    std::vector<uint8_t> decompressed =
+        XFileParser::decompressMSZip(
+            fileData.data(),
+            fileData.size()
+        );
+
+
+    if (decompressed.size() < 16)
+    {
+        NSLog(@"[Santa] FAILED: decompression returned %lu bytes",
+              (unsigned long)decompressed.size());
+
+        return nil;
+    }
+
+
+    NSLog(@"[Santa] Decompressed: %lu bytes",
+          (unsigned long)decompressed.size());
+
+
+    // ========================================================
+    // Parse tokens
+    // ========================================================
 
     std::vector<XToken> tokens =
         XFileParser::parseTokens(
-            data.data(),
-            data.size(),
-            1000000
+            decompressed.data(),
+            decompressed.size(),
+            500000
         );
 
-    if (tokens.empty()) {
-        NSLog(@"[Santa] No X-file tokens");
-        return nil;
-    }
 
     NSLog(@"[Santa] Tokens: %lu",
           (unsigned long)tokens.size());
 
-    // --------------------------------------------------------
-    // Frame hierarchy
-    // --------------------------------------------------------
 
-    std::vector<FrameNode> frames;
+    if (tokens.empty())
+    {
+        NSLog(@"[Santa] FAILED: zero X-file tokens");
+        return nil;
+    }
+
+
+    // ========================================================
+    // PASS 1
+    // Frame hierarchy
+    // ========================================================
 
     std::unordered_map<std::string, Mat4>
         boneWorldTransforms;
 
-    buildFrameHierarchy(
-        tokens,
-        frames,
-        boneWorldTransforms
-    );
 
-    NSLog(@"[Santa] Frames: %lu | Bone transforms: %lu",
-          (unsigned long)frames.size(),
+    {
+        std::vector<Mat4> worldStack;
+
+        worldStack.push_back(
+            Mat4::identity()
+        );
+
+
+        std::vector<char> braceKind;
+
+        std::vector<std::string>
+            frameNameStack;
+
+
+        std::string pendingFrameName;
+
+        bool pendingFrame = false;
+
+
+        for (size_t i = 0;
+             i < tokens.size();
+             ++i)
+        {
+            const XToken& tok =
+                tokens[i];
+
+
+            if (tok.type == 1 &&
+                tok.name == "Frame")
+            {
+                pendingFrame = true;
+                continue;
+            }
+
+
+            if (pendingFrame &&
+                tok.type == 1)
+            {
+                pendingFrameName =
+                    tok.name;
+
+                pendingFrame = false;
+
+                continue;
+            }
+
+
+            if (tok.type == 10)
+            {
+                if (!pendingFrameName.empty())
+                {
+                    worldStack.push_back(
+                        worldStack.back()
+                    );
+
+                    braceKind.push_back('F');
+
+                    frameNameStack.push_back(
+                        pendingFrameName
+                    );
+
+                    pendingFrameName.clear();
+                }
+                else
+                {
+                    braceKind.push_back('O');
+
+                    frameNameStack.push_back("");
+                }
+
+                continue;
+            }
+
+
+            if (tok.type == 11)
+            {
+                if (!braceKind.empty())
+                {
+                    char kind =
+                        braceKind.back();
+
+                    braceKind.pop_back();
+
+
+                    if (kind == 'F')
+                    {
+                        if (!frameNameStack.empty() &&
+                            !frameNameStack.back().empty())
+                        {
+                            boneWorldTransforms[
+                                frameNameStack.back()
+                            ] =
+                                worldStack.back();
+                        }
+
+
+                        if (worldStack.size() > 1)
+                        {
+                            worldStack.pop_back();
+                        }
+                    }
+
+
+                    if (!frameNameStack.empty())
+                    {
+                        frameNameStack.pop_back();
+                    }
+                }
+
+                continue;
+            }
+
+
+            if (tok.type == 1 &&
+                tok.name == "FrameTransformMatrix")
+            {
+                for (size_t j = i + 1;
+                     j < std::min(tokens.size(), i + 8);
+                     ++j)
+                {
+                    if (tokens[j].type == 7 &&
+                        tokens[j].floatList.size() >= 16)
+                    {
+                        Mat4 local =
+                            Mat4::fromFloats16(
+                                tokens[j].floatList
+                            );
+
+
+                        Mat4 parentWorld =
+                            worldStack.back();
+
+
+                        worldStack.back() =
+                            mulMat(
+                                local,
+                                parentWorld
+                            );
+
+
+                        break;
+                    }
+                }
+
+                continue;
+            }
+        }
+    }
+
+
+    NSLog(@"[Santa] Frames/Bones: %lu",
           (unsigned long)boneWorldTransforms.size());
 
-    // --------------------------------------------------------
-    // Output buffers
-    // --------------------------------------------------------
 
-    std::vector<float> allVertices;
+    // ========================================================
+    // PASS 2
+    // Mesh extraction
+    // ========================================================
+
+    std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
-    std::vector<uint32_t> allIndices;
+
+    std::vector<uint32_t> allIdx;
+
 
     int meshCount = 0;
-    int skinnedMeshCount = 0;
-    int skinBlockCount = 0;
-    int missingBones = 0;
+    int totalSkinBlocks = 0;
+    int missingBoneCount = 0;
     int totalVertices = 0;
 
+
     // --------------------------------------------------------
-    // Find every Mesh
+    // Every Mesh
     // --------------------------------------------------------
 
     for (size_t i = 0;
          i < tokens.size();
-         ++i) {
+         ++i)
+    {
+        const XToken& tok =
+            tokens[i];
 
-        const XToken& token = tokens[i];
 
-        if (token.type != 1 ||
-            token.name != "Mesh") {
+        if (tok.type != 1 ||
+            tok.name != "Mesh")
+        {
             continue;
         }
 
-        ParsedMesh mesh =
-            parseMeshBlock(tokens, i);
 
-        if (mesh.vertices.size() < 3)
-            continue;
+        int depth = 0;
 
-        int vertexCount =
-            (int)(mesh.vertices.size() / 3);
+        bool entered = false;
 
-        uint32_t baseVertex =
-            (uint32_t)(allVertices.size() / 3);
+        int meshEndIdx =
+            (int)tokens.size();
 
-        totalVertices += vertexCount;
 
-        bool hasSkin =
-            !mesh.skins.empty();
+        const std::vector<float>* meshVerts = nullptr;
 
-        if (hasSkin) {
-            ++skinnedMeshCount;
+        const std::vector<int>* meshFaces = nullptr;
+
+        const std::vector<float>* meshUVs = nullptr;
+
+
+        std::vector<SkinWeightsData> skins;
+
+
+        // ====================================================
+        // Parse Mesh
+        // ====================================================
+
+        for (size_t j = i + 1;
+             j < tokens.size();
+             ++j)
+        {
+            const XToken& t =
+                tokens[j];
+
+
+            if (t.type == 10)
+            {
+                depth++;
+                entered = true;
+                continue;
+            }
+
+
+            if (t.type == 11)
+            {
+                depth--;
+
+                if (entered &&
+                    depth == 0)
+                {
+                    meshEndIdx =
+                        (int)j;
+
+                    break;
+                }
+
+                continue;
+            }
+
+
+            if (t.type == 7 &&
+                !meshVerts)
+            {
+                meshVerts =
+                    &t.floatList;
+
+                continue;
+            }
+
+
+            if (t.type == 6 &&
+                meshVerts &&
+                !meshFaces)
+            {
+                meshFaces =
+                    &t.intList;
+
+                continue;
+            }
+
+
+            // =================================================
+            // UVs
+            // =================================================
+
+            if (t.type == 1 &&
+                t.name == "MeshTextureCoords")
+            {
+                int d2 = 0;
+
+                bool e2 = false;
+
+
+                for (size_t k = j + 1;
+                     k < tokens.size();
+                     ++k)
+                {
+                    if (tokens[k].type == 10)
+                    {
+                        d2++;
+                        e2 = true;
+                        continue;
+                    }
+
+
+                    if (tokens[k].type == 11)
+                    {
+                        d2--;
+
+                        if (e2 &&
+                            d2 == 0)
+                        {
+                            j = k;
+                            break;
+                        }
+
+                        continue;
+                    }
+
+
+                    if (tokens[k].type == 7)
+                    {
+                        meshUVs =
+                            &tokens[k].floatList;
+
+                        j = k;
+
+                        break;
+                    }
+                }
+
+                continue;
+            }
+
+
+            // =================================================
+            // SkinWeights
+            // =================================================
+
+            if (t.type == 1 &&
+                t.name == "SkinWeights")
+            {
+                SkinWeightsData sw;
+
+                int d2 = 0;
+
+                bool e2 = false;
+
+                int state = 0;
+
+
+                for (size_t k = j + 1;
+                     k < tokens.size();
+                     ++k)
+                {
+                    const XToken& tt =
+                        tokens[k];
+
+
+                    if (tt.type == 10)
+                    {
+                        d2++;
+                        e2 = true;
+                        continue;
+                    }
+
+
+                    if (tt.type == 11)
+                    {
+                        d2--;
+
+                        if (e2 &&
+                            d2 == 0)
+                        {
+                            j = k;
+                            break;
+                        }
+
+                        continue;
+                    }
+
+
+                    if (state == 0)
+                    {
+                        if (tt.type == 2)
+                        {
+                            sw.boneName =
+                                tt.name;
+
+                            state = 1;
+                        }
+                    }
+                    else if (state == 1)
+                    {
+                        if (tt.type == 41 ||
+                            tt.type == 3)
+                        {
+                            state = 2;
+                        }
+                    }
+                    else if (state == 2)
+                    {
+                        if (tt.type == 6)
+                        {
+                            sw.vertexIndices =
+                                tt.intList;
+
+                            state = 3;
+                        }
+                    }
+                    else if (state == 3)
+                    {
+                        if (tt.type == 7)
+                        {
+                            sw.weights =
+                                tt.floatList;
+
+                            state = 4;
+                        }
+                    }
+                    else if (state == 4)
+                    {
+                        if (tt.type == 7 &&
+                            tt.floatList.size() >= 16)
+                        {
+                            sw.offsetMatrix =
+                                Mat4::fromFloats16(
+                                    tt.floatList
+                                );
+
+                            state = 5;
+
+                            j = k;
+
+                            break;
+                        }
+                    }
+                }
+
+
+                if (!sw.boneName.empty() &&
+                    !sw.vertexIndices.empty() &&
+                    !sw.weights.empty())
+                {
+                    skins.push_back(sw);
+
+                    totalSkinBlocks++;
+                }
+
+
+                continue;
+            }
         }
 
-        skinBlockCount +=
-            (int)mesh.skins.size();
 
-        // ----------------------------------------------------
-        // Local vertices
-        // ----------------------------------------------------
+        // ====================================================
+        // Vertices
+        // ====================================================
 
-        std::vector<Vec3> local(vertexCount);
+        if (!meshVerts ||
+            meshVerts->size() < 3)
+        {
+            i = meshEndIdx;
+            continue;
+        }
+
+
+        int vc =
+            (int)(meshVerts->size() / 3);
+
+
+        int baseVertex =
+            (int)(allVerts.size() / 3);
+
+
+        totalVertices += vc;
+
+
+        std::vector<Vec3> localVerts(vc);
+
 
         for (int v = 0;
-             v < vertexCount;
-             ++v) {
-
-            local[v] = {
-                mesh.vertices[v * 3 + 0],
-                mesh.vertices[v * 3 + 1],
-                mesh.vertices[v * 3 + 2]
+             v < vc;
+             ++v)
+        {
+            localVerts[v] =
+            {
+                (*meshVerts)[v * 3 + 0],
+                (*meshVerts)[v * 3 + 1],
+                (*meshVerts)[v * 3 + 2]
             };
         }
 
-        // ----------------------------------------------------
-        // Skinning
-        // ----------------------------------------------------
 
-        std::vector<Vec3> finalVertices(
-            vertexCount,
-            { 0.0f, 0.0f, 0.0f }
+        // ====================================================
+        // Skin
+        // ====================================================
+
+        std::vector<Vec3> skinned(
+            vc,
+            {0, 0, 0}
         );
 
+
         std::vector<float> weightSum(
-            vertexCount,
+            vc,
             0.0f
         );
 
-        bool anyValidSkin = false;
 
-        for (const SkinWeightsData& skin :
-             mesh.skins) {
+        bool anySkin = false;
 
-            const Mat4* boneWorld =
-                findBoneTransform(
-                    boneWorldTransforms,
+
+        for (const auto& skin : skins)
+        {
+            auto it =
+                boneWorldTransforms.find(
                     skin.boneName
                 );
 
-            if (!boneWorld) {
 
-                ++missingBones;
+            if (it ==
+                boneWorldTransforms.end())
+            {
+                missingBoneCount++;
 
-                NSLog(
-                    @"[Santa] Missing bone: %s",
-                    skin.boneName.c_str()
-                );
+                NSLog(@"[Santa] Missing bone: %s",
+                      skin.boneName.c_str());
 
                 continue;
             }
 
-            if (!matrixLooksValid(
-                    skin.offsetMatrix) ||
-                !matrixLooksValid(*boneWorld)) {
-                continue;
-            }
 
-            // DirectX row-vector convention:
-            //
-            // vertex * offsetMatrix * boneWorld
-            //
-            Mat4 skinMatrix =
+            Mat4 boneMatrix =
                 mulMat(
                     skin.offsetMatrix,
-                    *boneWorld
+                    it->second
                 );
+
 
             size_t count =
                 std::min(
@@ -966,272 +1151,363 @@ static void appendFaces(
                     skin.weights.size()
                 );
 
+
             for (size_t k = 0;
                  k < count;
-                 ++k) {
-
-                int vertexIndex =
+                 ++k)
+            {
+                int vi =
                     skin.vertexIndices[k];
 
-                float weight =
+
+                float w =
                     skin.weights[k];
 
-                if (vertexIndex < 0 ||
-                    vertexIndex >= vertexCount) {
+
+                if (vi < 0 ||
+                    vi >= vc ||
+                    w <= 0.0f)
+                {
                     continue;
                 }
 
-                if (!std::isfinite(weight) ||
-                    weight <= 0.0f) {
-                    continue;
-                }
 
                 Vec3 transformed =
                     transformPoint(
-                        local[vertexIndex],
-                        skinMatrix
+                        localVerts[vi],
+                        boneMatrix
                     );
 
-                finalVertices[vertexIndex].x +=
-                    transformed.x * weight;
 
-                finalVertices[vertexIndex].y +=
-                    transformed.y * weight;
+                skinned[vi].x +=
+                    w * transformed.x;
 
-                finalVertices[vertexIndex].z +=
-                    transformed.z * weight;
+                skinned[vi].y +=
+                    w * transformed.y;
 
-                weightSum[vertexIndex] += weight;
+                skinned[vi].z +=
+                    w * transformed.z;
 
-                anyValidSkin = true;
+
+                weightSum[vi] += w;
+
+                anySkin = true;
             }
         }
 
-        // ----------------------------------------------------
-        // Vertices without weights stay local.
-        // Weighted vertices are normalized.
-        // ----------------------------------------------------
+
+        // ====================================================
+        // Normalize
+        // ====================================================
 
         for (int v = 0;
-             v < vertexCount;
-             ++v) {
-
-            if (weightSum[v] <= 0.000001f) {
-
-                finalVertices[v] =
-                    local[v];
-
-            } else {
-
+             v < vc;
+             ++v)
+        {
+            if (weightSum[v] < 0.000001f)
+            {
+                skinned[v] =
+                    localVerts[v];
+            }
+            else
+            {
                 float inv =
-                    1.0f / weightSum[v];
+                    1.0f /
+                    weightSum[v];
 
-                finalVertices[v].x *= inv;
-                finalVertices[v].y *= inv;
-                finalVertices[v].z *= inv;
+
+                skinned[v].x *= inv;
+                skinned[v].y *= inv;
+                skinned[v].z *= inv;
             }
         }
 
-        // ----------------------------------------------------
-        // Append vertices
-        // ----------------------------------------------------
+
+        // ====================================================
+        // Store vertices
+        // ====================================================
 
         for (int v = 0;
-             v < vertexCount;
-             ++v) {
+             v < vc;
+             ++v)
+        {
+            allVerts.push_back(
+                skinned[v].x
+            );
 
-            const Vec3& p =
-                finalVertices[v];
+            allVerts.push_back(
+                skinned[v].y
+            );
 
-            allVertices.push_back(p.x);
-            allVertices.push_back(p.y);
-            allVertices.push_back(p.z);
+            allVerts.push_back(
+                skinned[v].z
+            );
 
-            // Keep debug colors for now.
-            if (anyValidSkin) {
 
+            if (anySkin)
+            {
                 allColors.push_back(1.0f);
                 allColors.push_back(0.2f);
                 allColors.push_back(0.2f);
-
-            } else {
-
-                allColors.push_back(0.65f);
-                allColors.push_back(0.65f);
-                allColors.push_back(0.65f);
+            }
+            else
+            {
+                allColors.push_back(0.6f);
+                allColors.push_back(0.6f);
+                allColors.push_back(0.6f);
             }
         }
 
-        // ----------------------------------------------------
+
+        // ====================================================
         // Faces
-        // ----------------------------------------------------
+        // ====================================================
 
-        if (!mesh.faces.empty()) {
+        if (meshFaces)
+        {
+            const auto& raw =
+                *meshFaces;
 
-            appendFaces(
-                mesh.faces,
-                baseVertex,
-                allIndices
+
+            size_t p = 0;
+
+
+            if (!raw.empty() &&
+                (raw[0] == 3 ||
+                 raw[0] == 4))
+            {
+                while (p < raw.size())
+                {
+                    uint32_t cnt =
+                        raw[p++];
+
+
+                    if (cnt < 3 ||
+                        cnt > 16 ||
+                        p + cnt > raw.size())
+                    {
+                        break;
+                    }
+
+
+                    for (uint32_t k = 1;
+                         k + 1 < cnt;
+                         ++k)
+                    {
+                        allIdx.push_back(
+                            (uint32_t)raw[p]
+                            + baseVertex
+                        );
+
+
+                        allIdx.push_back(
+                            (uint32_t)raw[p + k]
+                            + baseVertex
+                        );
+
+
+                        allIdx.push_back(
+                            (uint32_t)raw[p + k + 1]
+                            + baseVertex
+                        );
+                    }
+
+
+                    p += cnt;
+                }
+            }
+            else
+            {
+                for (size_t k = 0;
+                     k + 2 < raw.size();
+                     k += 3)
+                {
+                    allIdx.push_back(
+                        (uint32_t)raw[k]
+                        + baseVertex
+                    );
+
+                    allIdx.push_back(
+                        (uint32_t)raw[k + 1]
+                        + baseVertex
+                    );
+
+                    allIdx.push_back(
+                        (uint32_t)raw[k + 2]
+                        + baseVertex
+                    );
+                }
+            }
+        }
+
+
+        // ====================================================
+        // UV
+        // ====================================================
+
+        if (meshUVs &&
+            meshUVs->size() >=
+                (size_t)vc * 2)
+        {
+            allUVs.insert(
+                allUVs.end(),
+                meshUVs->begin(),
+                meshUVs->begin() +
+                    vc * 2
             );
         }
-
-        // ----------------------------------------------------
-        // UVs
-        // ----------------------------------------------------
-
-        if (mesh.uvs.size() >=
-            (size_t)vertexCount * 2) {
-
+        else
+        {
             for (int v = 0;
-                 v < vertexCount;
-                 ++v) {
-
-                allUVs.push_back(
-                    mesh.uvs[v * 2 + 0]
-                );
-
-                // Metal texture coordinates normally have
-                // opposite vertical orientation.
-                allUVs.push_back(
-                    1.0f -
-                    mesh.uvs[v * 2 + 1]
-                );
-            }
-
-        } else {
-
-            for (int v = 0;
-                 v < vertexCount;
-                 ++v) {
-
+                 v < vc;
+                 ++v)
+            {
                 allUVs.push_back(0.5f);
                 allUVs.push_back(0.5f);
             }
         }
 
-        ++meshCount;
 
-        NSLog(
-            @"[Santa] Mesh %d: vertices=%d faces=%lu skins=%lu",
-            meshCount,
-            vertexCount,
-            (unsigned long)(mesh.faces.size()),
-            (unsigned long)(mesh.skins.size())
-        );
+        meshCount++;
+
+
+        NSLog(@"[Santa] Mesh %d: vertices=%d skins=%lu",
+              meshCount,
+              vc,
+              (unsigned long)skins.size());
+
+
+        i = meshEndIdx;
     }
 
-    // --------------------------------------------------------
-    // Final validation
-    // --------------------------------------------------------
 
-    NSLog(
-        @"[Santa] RESULT meshes=%d skinned=%d skins=%d missingBones=%d vertices=%d triangles=%lu",
-        meshCount,
-        skinnedMeshCount,
-        skinBlockCount,
-        missingBones,
-        totalVertices,
-        (unsigned long)(allIndices.size() / 3)
-    );
+    // ========================================================
+    // Summary
+    // ========================================================
 
-    if (allVertices.empty()) {
-        NSLog(@"[Santa] No vertices extracted");
+    NSLog(@"================================================");
+    NSLog(@"[Santa] MESH SUMMARY");
+    NSLog(@"Meshes: %d", meshCount);
+    NSLog(@"SkinBlocks: %d", totalSkinBlocks);
+    NSLog(@"MissingBones: %d", missingBoneCount);
+    NSLog(@"Vertices: %d", totalVertices);
+    NSLog(@"Indices: %lu",
+          (unsigned long)allIdx.size());
+    NSLog(@"================================================");
+
+
+    if (allVerts.empty() ||
+        allIdx.empty())
+    {
+        NSLog(@"[Santa] FAILED: no renderable mesh");
+
         return nil;
     }
 
-    if (allIndices.empty()) {
-        NSLog(@"[Santa] No triangles extracted");
-        return nil;
-    }
 
-    // --------------------------------------------------------
-    // Create Objective-C MeshData
-    // --------------------------------------------------------
+    // ========================================================
+    // MeshData
+    // ========================================================
 
-    MeshData *result =
+    MeshData *mesh =
         [[MeshData alloc] init];
 
-    result.vertexCount =
-        (int)(allVertices.size() / 3);
 
-    result.faceCount =
-        (int)(allIndices.size() / 3);
+    mesh.vertexCount =
+        (int)(allVerts.size() / 3);
 
-    result.vertices =
+
+    mesh.faceCount =
+        (int)(allIdx.size() / 3);
+
+
+    mesh.vertices =
         [NSMutableData
-         dataWithBytes:allVertices.data()
-         length:allVertices.size() *
+         dataWithBytes:allVerts.data()
+         length:allVerts.size() *
                 sizeof(float)];
 
-    result.indices =
+
+    mesh.indices =
         [NSMutableData
-         dataWithBytes:allIndices.data()
-         length:allIndices.size() *
+         dataWithBytes:allIdx.data()
+         length:allIdx.size() *
                 sizeof(uint32_t)];
 
-    result.uvs =
+
+    mesh.uvs =
         [NSMutableData
          dataWithBytes:allUVs.data()
          length:allUVs.size() *
                 sizeof(float)];
 
-    result.colors =
+
+    mesh.colors =
         [NSMutableData
          dataWithBytes:allColors.data()
          length:allColors.size() *
                 sizeof(float)];
 
-    result.offset = 0;
 
-    result.textureName = nil;
+    mesh.offset = 0;
 
-    result.debugInfo =
+    mesh.textureName = nil;
+
+
+    mesh.debugInfo =
         [NSString stringWithFormat:
-         @"%@\n"
-          "Frames: %lu\n"
-          "Meshes: %d\n"
-          "Skinned: %d\n"
-          "Skin blocks: %d\n"
-          "Missing bones: %d\n"
-          "Vertices: %d\n"
-          "Triangles: %d",
-         assetName,
-         (unsigned long)frames.size(),
-         meshCount,
-         skinnedMeshCount,
-         skinBlockCount,
-         missingBones,
-         result.vertexCount,
-         result.faceCount];
+            @"%@\n"
+             "Meshes: %d\n"
+             "SkinBlocks: %d\n"
+             "MissingBones: %d\n"
+             "Vertices: %d\n"
+             "Faces: %d",
+             assetName,
+             meshCount,
+             totalSkinBlocks,
+             missingBoneCount,
+             mesh.vertexCount,
+             mesh.faceCount];
 
-    return result;
+
+    return mesh;
 }
 
+
 // ============================================================
-// LEVEL DATA
+// Level Data
 // ============================================================
 
-+ (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath {
-
++ (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath
+{
     NSData *data =
         [self loadAssetNamed:levelPath];
 
+
     if (!data)
+    {
+        NSLog(@"[Level] Could not load: %@",
+              levelPath);
+
         return @[];
+    }
+
 
     const uint8_t *bytes =
         (const uint8_t *)data.bytes;
 
-    NSUInteger size =
+
+    NSUInteger totalSize =
         data.length;
 
-    NSLog(
-        @"[Level] %@: %lu bytes",
-        levelPath,
-        (unsigned long)size
-    );
 
-    NSArray<NSString *> *knownNames = @[
+    NSLog(@"[Level] %@: %lu bytes",
+          levelPath,
+          (unsigned long)totalSize);
+
+
+    NSArray *knownNames =
+    @[
         @"EXTRA LIFE",
         @"JUMPER",
         @"PRESENT A",
@@ -1245,62 +1521,70 @@ static void appendFaces(
         @"HILL"
     ];
 
+
     NSMutableArray<LevelObject *> *objects =
         [NSMutableArray array];
 
+
     for (NSUInteger i = 0;
-         i < size;
-         ++i) {
-
-        for (NSString *name in knownNames) {
-
+         i + 8 < totalSize;
+         ++i)
+    {
+        for (NSString *name in knownNames)
+        {
             NSData *nameData =
                 [name dataUsingEncoding:
-                 NSASCIIStringEncoding];
+                    NSASCIIStringEncoding];
 
-            NSUInteger len =
-                nameData.length;
 
-            if (i + len > size)
+            if (i + nameData.length >
+                totalSize)
+            {
                 continue;
+            }
+
 
             if (memcmp(
                     bytes + i,
                     nameData.bytes,
-                    len) == 0) {
-
-                LevelObject *object =
+                    nameData.length
+                ) == 0)
+            {
+                LevelObject *obj =
                     [[LevelObject alloc] init];
 
-                object.objectName = name;
 
-                // Position extraction is intentionally not
-                // guessed here. The supplied level parser
-                // does not yet define the binary object layout.
-                object.x = 0.0f;
-                object.y = 0.0f;
-                object.z = 0.0f;
+                obj.objectName =
+                    name;
 
-                [objects addObject:object];
 
-                NSLog(
-                    @"[Level] Found %@ at %lu",
-                    name,
-                    (unsigned long)i
-                );
+                obj.x = 0.0f;
+                obj.y = 0.0f;
+                obj.z = 0.0f;
 
-                i += len - 1;
+
+                [objects addObject:obj];
+
+
+                NSLog(@"[Level] Found '%@' at offset %lu",
+                      name,
+                      (unsigned long)i);
+
+
+                i += nameData.length;
+
                 break;
             }
         }
     }
 
-    NSLog(
-        @"[Level] Total objects: %lu",
-        (unsigned long)objects.count
-    );
+
+    NSLog(@"[Level] Total objects: %lu",
+          (unsigned long)objects.count);
+
 
     return objects;
 }
+
 
 @end
