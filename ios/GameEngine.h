@@ -9,6 +9,7 @@
 @property (strong, nonatomic) NSMutableData *colors;
 @property (nonatomic) NSUInteger offset;
 @property (strong, nonatomic) NSString *textureName;
+@property (strong, nonatomic) NSString *debugInfo;
 @end
 
 @interface GameEngine : NSObject
