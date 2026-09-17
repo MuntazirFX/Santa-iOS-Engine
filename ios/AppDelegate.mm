@@ -14,8 +14,7 @@
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [vc.view addSubview:mv];
     
-    // LARGE text view to show bbox info
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 250)];
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 200)];
     tv.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.85];
     tv.textColor = [UIColor greenColor];
     tv.font = [UIFont fontWithName:@"Courier" size:9];
@@ -23,15 +22,24 @@
     tv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [vc.view addSubview:tv];
     
-    MeshData *mesh = [GameEngine extractSantaWithTransforms:960968];
+    NSMutableString *log = [NSMutableString string];
+    
+    // ===== Load SANTA (correct file) =====
+    [log appendString:@"Loading Santa...\n"];
+    MeshData *mesh = [GameEngine extractMeshFromAsset:@"gfx\\weihnachtsman_000.x"];
     
     if (mesh && mesh.vertexCount > 0) {
-        tv.text = [NSString stringWithFormat:@"MESH BBOX REPORT\n%d v, %d f\n\n%@",
-                   mesh.vertexCount, mesh.faceCount, mesh.debugInfo ?: @"(no debug)"];
+        [log appendFormat:@"✅ SANTA LOADED\n%@\n", mesh.debugInfo ?: @""];
         [mv setMeshToRender:mesh];
     } else {
-        tv.text = @"Extraction failed";
+        [log appendString:@"❌ Santa load failed\n"];
     }
+    
+    // ===== List levels =====
+    [log appendString:@"\nLevels:\n"];
+    [log appendString:[GameEngine listLevelFiles]];
+    
+    tv.text = log;
     
     self.window.rootViewController = vc;
     [self.window makeKeyAndVisible];
