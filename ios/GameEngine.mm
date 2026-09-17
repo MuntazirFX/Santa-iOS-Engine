@@ -34,17 +34,12 @@ struct Vec3 { float x, y, z; };
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
     
-    // ============ DEBUG INFO STRING ============
-    NSMutableString *dbg = [NSMutableString string];
-    [dbg appendFormat:@"Tokens: %lu\n", (unsigned long)tokens.size()];
-    
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
     std::vector<uint32_t> allIdx;
     
     int meshCount = 0;
-    int skinCount = 0;
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
@@ -55,7 +50,6 @@ struct Vec3 { float x, y, z; };
             const std::vector<float>* meshVerts = nullptr;
             const std::vector<int>* meshFaces = nullptr;
             const std::vector<float>* meshUVs = nullptr;
-            int skinBlocksInThisMesh = 0;
             
             for (size_t j = i + 1; j < tokens.size(); j++) {
                 if (tokens[j].type == 10) { depth++; entered = true; continue; }
@@ -78,48 +72,30 @@ struct Vec3 { float x, y, z; };
                         if (tokens[k].type == 7) { meshUVs = &tokens[k].floatList; break; }
                     }
                 }
-                if (tokens[j].type == 1 && tokens[j].name == "SkinWeights") {
-                    skinBlocksInThisMesh++;
-                }
             }
             
             if (meshVerts && meshVerts->size() >= 3) {
-                int vc = (int)(meshVerts->size() / 3);
+                meshCount++;
                 
-                // ============ BBOX ============
-                float minX = 1e9, maxX = -1e9;
-                float minY = 1e9, maxY = -1e9;
-                float minZ = 1e9, maxZ = -1e9;
-                for (int v = 0; v < vc; v++) {
-                    float x = (*meshVerts)[v*3];
-                    float y = (*meshVerts)[v*3+1];
-                    float z = (*meshVerts)[v*3+2];
-                    if (x < minX) minX = x; if (x > maxX) maxX = x;
-                    if (y < minY) minY = y; if (y > maxY) maxY = y;
-                    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+                // ============ SIRF MESH 1 RAKHEIN ============
+                if (meshCount > 1) {
+                    NSLog(@"[Santa] Skipping mesh %d", meshCount);
+                    break;
                 }
                 
-                meshCount++;
-                [dbg appendFormat:@"M%d: %dv skin=%d\n", meshCount, vc, skinBlocksInThisMesh];
-                [dbg appendFormat:@" X%.1f..%.1f\n", minX, maxX];
-                [dbg appendFormat:@" Y%.1f..%.1f\n", minY, maxY];
-                [dbg appendFormat:@" Z%.1f..%.1f\n", minZ, maxZ];
+                int baseVertex = 0;
+                int vc = (int)(meshVerts->size() / 3);
                 
-                int baseVertex = (int)(allVerts.size() / 3);
-                
+                // RAW vertices (no transform)
                 for (int v = 0; v < vc; v++) {
                     allVerts.push_back((*meshVerts)[v*3]);
                     allVerts.push_back((*meshVerts)[v*3+1]);
                     allVerts.push_back((*meshVerts)[v*3+2]);
                     
-                    float colors[8][3] = {
-                        {1.0, 0.3, 0.3}, {0.3, 1.0, 0.3}, {0.3, 0.3, 1.0}, {1.0, 1.0, 0.3},
-                        {1.0, 0.3, 1.0}, {0.3, 1.0, 1.0}, {1.0, 0.6, 0.2}, {0.6, 0.3, 1.0}
-                    };
-                    float *c = colors[(meshCount - 1) % 8];
-                    allColors.push_back(c[0]);
-                    allColors.push_back(c[1]);
-                    allColors.push_back(c[2]);
+                    // Red color for Santa
+                    allColors.push_back(1.0f);
+                    allColors.push_back(0.3f);
+                    allColors.push_back(0.3f);
                 }
                 
                 if (meshFaces) {
@@ -154,12 +130,11 @@ struct Vec3 { float x, y, z; };
                     }
                 }
                 
-                skinCount += skinBlocksInThisMesh;
+                NSLog(@"[Santa] Mesh 1 kept: %d v", vc);
+                break;  // Stop after first mesh
             }
         }
     }
-    
-    [dbg appendFormat:@"TOTAL: %dM %dSKIN", meshCount, skinCount];
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -171,7 +146,7 @@ struct Vec3 { float x, y, z; };
     mesh.uvs = [NSMutableData dataWithBytes:allUVs.data() length:allUVs.size() * 4];
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = offset;
-    mesh.debugInfo = dbg;
+    mesh.debugInfo = [NSString stringWithFormat:@"M1 only: %d v, %d f", mesh.vertexCount, mesh.faceCount];
     
     return mesh;
 }
