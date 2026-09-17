@@ -117,6 +117,8 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 if (len > 10000 || offset + len > size) { offset = size; break; }
                 token.name = std::string((const char*)(data + offset), len);
                 offset += len;
+                // NAME padding: 2 bytes null terminator
+                if (offset + 2 <= size) offset += 2;
                 break;
             }
             case 2: {
@@ -126,6 +128,8 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                 if (len > 10000 || offset + len > size) { offset = size; break; }
                 token.name = std::string((const char*)(data + offset), len);
                 offset += len;
+                // STRING padding: 2 bytes null terminator
+                if (offset + 2 <= size) offset += 2;
                 break;
             }
             case 3:
@@ -221,6 +225,8 @@ std::vector<XToken> XFileParser::parseTokens(const uint8_t* data, size_t size, i
                     offset += 4;
                     if (len > 10000 || offset + len > size) { offset = size; break; }
                     offset += len;
+                    // String padding
+                    if (offset + 2 <= size) offset += 2;
                 }
                 break;
             case 51: break;
