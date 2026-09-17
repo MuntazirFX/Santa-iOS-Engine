@@ -19,7 +19,6 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
-    // Row-major read (D3DMATRIX spec)
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
         for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
@@ -64,11 +63,9 @@ struct MeshSkinData {
     std::vector<SkinWeightsData> skins;
 };
 
-// ============ MeshData Implementation ============
 @implementation MeshData
 @end
 
-// ============ GameEngine Implementation ============
 @implementation GameEngine
 
 + (NSData *)loadAssetNamed:(NSString *)name {
@@ -90,11 +87,12 @@ struct MeshSkinData {
     std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(bytes + offset, xpkData.length - offset);
     if (decompressed.size() < 16) return nil;
     
-    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 20000);
+    // ============ FIX 1: BOHOT ZYADA TOKENS ============
+    std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
     // ============================================================
-    // PASS 1: Walk frame hierarchy, populate boneWorldTransforms
+    // PASS 1: Frame hierarchy → boneWorldTransforms
     // ============================================================
     std::unordered_map<std::string, Mat4> boneWorldTransforms;
     
@@ -110,20 +108,17 @@ struct MeshSkinData {
         for (size_t i = 0; i < tokens.size(); i++) {
             const auto& tok = tokens[i];
             
-            // "Frame" keyword
             if (tok.type == 1 && tok.name == "Frame") {
                 pendingFrame = true;
                 continue;
             }
             
-            // Next NAME after "Frame" is the frame name
             if (pendingFrame && tok.type == 1) {
                 pendingFrameName = tok.name;
                 pendingFrame = false;
                 continue;
             }
             
-            // Open brace
             if (tok.type == 10) {
                 if (!pendingFrameName.empty()) {
                     worldStack.push_back(worldStack.back());
@@ -137,13 +132,11 @@ struct MeshSkinData {
                 continue;
             }
             
-            // Close brace
             if (tok.type == 11) {
                 if (!braceKind.empty()) {
                     char kind = braceKind.back();
                     braceKind.pop_back();
                     
-                    // Register bone transform on frame close
                     if (kind == 'F') {
                         if (!frameNameStack.empty() && !frameNameStack.back().empty()) {
                             boneWorldTransforms[frameNameStack.back()] = worldStack.back();
@@ -155,7 +148,6 @@ struct MeshSkinData {
                 continue;
             }
             
-            // FrameTransformMatrix
             if (tok.type == 1 && tok.name == "FrameTransformMatrix") {
                 for (size_t j = i + 1; j < std::min(tokens.size(), i + 6); j++) {
                     if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
@@ -169,13 +161,12 @@ struct MeshSkinData {
             }
         }
         
-        NSLog(@"[Santa] Bone world transforms: %lu", (unsigned long)boneWorldTransforms.size());
+        NSLog(@"[Santa] Bone transforms: %lu", (unsigned long)boneWorldTransforms.size());
     }
     
     // ============================================================
-    // PASS 2: Extract meshes, parse SkinWeights, apply skinning
+    // PASS 2: Extract meshes + parse skins + apply skinning
     // ============================================================
-    
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
@@ -183,266 +174,263 @@ struct MeshSkinData {
     
     int meshCount = 0;
     int skinnedMeshCount = 0;
+    int totalSkinBlocks = 0;
     int missingBoneCount = 0;
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         
-        if (tok.type == 1 && tok.name == "Mesh") {
-            // ===== Parse Mesh template =====
-            int depth = 0;
-            bool entered = false;
-            const std::vector<float>* meshVerts = nullptr;
-            const std::vector<int>* meshFaces = nullptr;
-            const std::vector<float>* meshUVs = nullptr;
+        if (tok.type != 1 || tok.name != "Mesh") continue;
+        
+        // ============ Parse ONE Mesh block ============
+        int depth = 0;
+        bool entered = false;
+        int meshEndIdx = (int)tokens.size();
+        const std::vector<float>* meshVerts = nullptr;
+        const std::vector<int>* meshFaces = nullptr;
+        const std::vector<float>* meshUVs = nullptr;
+        MeshSkinData skinData;
+        
+        for (size_t j = i + 1; j < tokens.size(); j++) {
+            const auto& t = tokens[j];
             
-            // Skin data collection
-            MeshSkinData skinData;
-            bool parsingSkinHeader = false;
-            bool parsingSkinWeights = false;
-            
-            int meshEndIdx = (int)tokens.size();
-            
-            for (size_t j = i + 1; j < tokens.size(); j++) {
-                if (tokens[j].type == 10) { depth++; entered = true; continue; }
-                if (tokens[j].type == 11) {
-                    depth--;
-                    if (entered && depth == 0) { meshEndIdx = (int)j; break; }
-                    continue;
-                }
-                
-                // First FLOAT_LIST = vertices
-                if (tokens[j].type == 7 && !meshVerts) {
-                    meshVerts = &tokens[j].floatList;
-                    continue;
-                }
-                // First INTEGER_LIST after vertices = face indices
-                if (tokens[j].type == 6 && meshVerts && !meshFaces) {
-                    meshFaces = &tokens[j].intList;
-                    continue;
-                }
-                // MeshTextureCoords
-                if (tokens[j].type == 1 && tokens[j].name == "MeshTextureCoords") {
-                    int d2 = 0; bool e2 = false;
-                    for (size_t k = j + 1; k < tokens.size(); k++) {
-                        if (tokens[k].type == 10) { d2++; e2 = true; continue; }
-                        if (tokens[k].type == 11) {
-                            d2--;
-                            if (e2 && d2 == 0) break;
-                            continue;
-                        }
-                        if (tokens[k].type == 7) { meshUVs = &tokens[k].floatList; break; }
-                    }
-                    continue;
-                }
-                
-                // ===== XSkinMeshHeader =====
-                if (tokens[j].type == 1 && tokens[j].name == "XSkinMeshHeader") {
-                    parsingSkinHeader = true;
-                    // Look for next 3 WORD/DWORD values
-                    // Our parser stores wordValue (40), dwordValue (41), intValue (3)
-                    int found = 0;
-                    for (size_t k = j + 1; k < tokens.size() && k < j + 10; k++) {
-                        int v = -1;
-                        if (tokens[k].type == 40) v = tokens[k].wordValue;
-                        else if (tokens[k].type == 41) v = tokens[k].dwordValue;
-                        else if (tokens[k].type == 3) v = tokens[k].intValue;
-                        
-                        if (v >= 0) {
-                            if (found == 0) skinData.maxSkinWeightsPerVertex = v;
-                            else if (found == 1) skinData.maxSkinWeightsPerFace = v;
-                            else if (found == 2) { skinData.nBones = v; break; }
-                            found++;
-                        }
-                    }
-                    parsingSkinHeader = false;
-                    continue;
-                }
-                
-                // ===== SkinWeights =====
-                if (tokens[j].type == 1 && tokens[j].name == "SkinWeights") {
-                    parsingSkinWeights = true;
-                    
-                    SkinWeightsData sw;
-                    
-                    // Walk inside SkinWeights block
-                    int d3 = 0; bool e3 = false;
-                    int state = 0; // 0=name, 1=count, 2=indices, 3=weights, 4=matrix
-                    int count = 0;
-                    int readIdx = 0;
-                    
-                    for (size_t k = j + 1; k < tokens.size(); k++) {
-                        if (tokens[k].type == 10) { d3++; e3 = true; continue; }
-                        if (tokens[k].type == 11) {
-                            d3--;
-                            if (e3 && d3 == 0) break;
-                            continue;
-                        }
-                        
-                        if (state == 0) {
-                            // Bone name: STRING (type 2) or NAME (type 1)
-                            if (tokens[k].type == 2 || tokens[k].type == 1) {
-                                sw.boneName = tokens[k].name;
-                                state = 1;
-                            }
-                        } else if (state == 1) {
-                            // Count: DWORD (41) or INT (3) or ILIST (6)
-                            if (tokens[k].type == 41) { count = tokens[k].dwordValue; state = 2; }
-                            else if (tokens[k].type == 3) { count = tokens[k].intValue; state = 2; }
-                            else if (tokens[k].type == 6) { count = (int)tokens[k].intList.size(); state = 3; }
-                        } else if (state == 2) {
-                            // Indices: ILIST (6)
-                            if (tokens[k].type == 6) {
-                                for (int iv : tokens[k].intList) sw.vertexIndices.push_back(iv);
-                                state = 3;
-                            }
-                        } else if (state == 3) {
-                            // Weights: FLIST (7)
-                            if (tokens[k].type == 7) {
-                                sw.weights = tokens[k].floatList;
-                                state = 4;
-                            }
-                        } else if (state == 4) {
-                            // Offset matrix: FLIST (7) with 16 floats
-                            if (tokens[k].type == 7 && tokens[k].floatList.size() >= 16) {
-                                sw.offsetMatrix = Mat4::fromFloats16(tokens[k].floatList);
-                                state = 5;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (state >= 4 && !sw.boneName.empty()) {
-                        skinData.skins.push_back(sw);
-                    }
-                    parsingSkinWeights = false;
-                    continue;
-                }
+            if (t.type == 10) { depth++; entered = true; continue; }
+            if (t.type == 11) {
+                depth--;
+                if (entered && depth == 0) { meshEndIdx = (int)j; break; }
+                continue;
             }
             
-            // ===== Apply skinning to this mesh's vertices =====
-            if (meshVerts && meshVerts->size() >= 3) {
-                int vc = (int)(meshVerts->size() / 3);
-                int baseVertex = (int)(allVerts.size() / 3);
-                
-                // Build local vertex array
-                std::vector<Vec3> localVerts(vc);
-                for (int v = 0; v < vc; v++) {
-                    localVerts[v] = { (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
-                }
-                
-                // Skinned output
-                std::vector<Vec3> skinned(vc, {0,0,0});
-                std::vector<float> weightSum(vc, 0.0f);
-                
-                if (!skinData.skins.empty()) {
-                    // Apply skinning
-                    for (const auto& skin : skinData.skins) {
-                        auto it = boneWorldTransforms.find(skin.boneName);
-                        if (it == boneWorldTransforms.end()) {
-                            missingBoneCount++;
-                            continue;
-                        }
-                        
-                        Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
-                        
-                        for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
-                            int vi = skin.vertexIndices[k];
-                            float w = skin.weights[k];
-                            if (vi < 0 || vi >= vc) continue;
-                            
-                            Vec3 t = transformPoint(localVerts[vi], boneMatrix);
-                            skinned[vi].x += w * t.x;
-                            skinned[vi].y += w * t.y;
-                            skinned[vi].z += w * t.z;
-                            weightSum[vi] += w;
-                        }
+            // Vertices — first FLIST
+            if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
+            
+            // Faces — first ILIST after vertices
+            if (t.type == 6 && meshVerts && !meshFaces) { meshFaces = &t.intList; continue; }
+            
+            // MeshTextureCoords
+            if (t.type == 1 && t.name == "MeshTextureCoords") {
+                int d2 = 0; bool e2 = false;
+                for (size_t k = j + 1; k < tokens.size(); k++) {
+                    if (tokens[k].type == 10) { d2++; e2 = true; continue; }
+                    if (tokens[k].type == 11) {
+                        d2--;
+                        if (e2 && d2 == 0) { j = k; break; }
+                        continue;
                     }
-                    
-                    // Normalize
-                    for (int v = 0; v < vc; v++) {
-                        if (weightSum[v] < 1e-6f) {
-                            skinned[v] = localVerts[v];
-                        } else if (std::fabs(weightSum[v] - 1.0f) > 1e-3f) {
-                            float inv = 1.0f / weightSum[v];
-                            skinned[v].x *= inv;
-                            skinned[v].y *= inv;
-                            skinned[v].z *= inv;
-                        }
-                    }
-                    
-                    skinnedMeshCount++;
-                } else {
-                    // No skin data - use raw vertices
-                    skinned = localVerts;
+                    if (tokens[k].type == 7) { meshUVs = &tokens[k].floatList; j = k; break; }
                 }
-                
-                // Add to global mesh
-                for (int v = 0; v < vc; v++) {
-                    allVerts.push_back(skinned[v].x);
-                    allVerts.push_back(skinned[v].y);
-                    allVerts.push_back(skinned[v].z);
-                    
-                    // Colors: skinned = red, non-skinned = grey
-                    if (!skinData.skins.empty()) {
-                        allColors.push_back(1.0f);
-                        allColors.push_back(0.3f);
-                        allColors.push_back(0.3f);
-                    } else {
-                        allColors.push_back(0.6f);
-                        allColors.push_back(0.6f);
-                        allColors.push_back(0.6f);
-                    }
-                }
-                
-                // Faces
-                if (meshFaces) {
-                    const auto& raw = *meshFaces;
-                    size_t p = 0;
-                    if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
-                        while (p < raw.size()) {
-                            uint32_t cnt = raw[p++];
-                            if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
-                            for (uint32_t k = 1; k + 1 < cnt; k++) {
-                                allIdx.push_back((uint32_t)raw[p] + baseVertex);
-                                allIdx.push_back((uint32_t)raw[p + k] + baseVertex);
-                                allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
-                            }
-                            p += cnt;
-                        }
-                    } else {
-                        for (size_t k = 0; k + 2 < raw.size(); k += 3) {
-                            allIdx.push_back((uint32_t)raw[k] + baseVertex);
-                            allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
-                            allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
-                        }
-                    }
-                }
-                
-                // UVs
-                if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
-                    allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
-                } else {
-                    for (int u = 0; u < vc; u++) {
-                        allUVs.push_back(0.5f);
-                        allUVs.push_back(0.5f);
-                    }
-                }
-                
-                meshCount++;
-                NSLog(@"[Santa] Mesh %d: %d v, skins=%lu, bones=%d",
-                      meshCount, vc, (unsigned long)skinData.skins.size(), skinData.nBones);
+                continue;
             }
             
-            // Skip to end of this Mesh block
-            i = meshEndIdx;
+            // XSkinMeshHeader — read 3 values
+            if (t.type == 1 && t.name == "XSkinMeshHeader") {
+                int vals[3] = {0,0,0};
+                int found = 0;
+                for (size_t k = j + 1; k < tokens.size() && k < j + 12; k++) {
+                    if (tokens[k].type == 11) { j = k; break; }
+                    int v = -1;
+                    if (tokens[k].type == 40) v = tokens[k].wordValue;
+                    else if (tokens[k].type == 41) v = tokens[k].dwordValue;
+                    else if (tokens[k].type == 3) v = tokens[k].intValue;
+                    if (v >= 0 && found < 3) { vals[found++] = v; }
+                    if (found == 3) {
+                        // skip to closing brace
+                        int d2 = 1;
+                        for (size_t m = k + 1; m < tokens.size(); m++) {
+                            if (tokens[m].type == 10) d2++;
+                            else if (tokens[m].type == 11) { d2--; if (d2 == 0) { j = m; break; } }
+                        }
+                        break;
+                    }
+                }
+                skinData.maxSkinWeightsPerVertex = vals[0];
+                skinData.maxSkinWeightsPerFace = vals[1];
+                skinData.nBones = vals[2];
+                continue;
+            }
+            
+            // SkinWeights — MULTIPLE blocks possible
+            if (t.type == 1 && t.name == "SkinWeights") {
+                SkinWeightsData sw;
+                int d2 = 0; bool e2 = false;
+                int state = 0;
+                int weightCount = 0;
+                int readCount = 0;
+                std::vector<int> tempIndices;
+                
+                for (size_t k = j + 1; k < tokens.size(); k++) {
+                    const auto& tt = tokens[k];
+                    
+                    if (tt.type == 10) { d2++; e2 = true; continue; }
+                    if (tt.type == 11) {
+                        d2--;
+                        if (e2 && d2 == 0) { j = k; break; }
+                        continue;
+                    }
+                    
+                    if (state == 0) {
+                        // Bone name STRING (type 2) — our parser stores in .name
+                        if (tt.type == 2) { sw.boneName = tt.name; state = 1; }
+                    } else if (state == 1) {
+                        // nWeights — DWORD (41) or INT (3)
+                        if (tt.type == 41) { weightCount = tt.dwordValue; state = 2; }
+                        else if (tt.type == 3) { weightCount = tt.intValue; state = 2; }
+                        else if (tt.type == 6) { // ILIST
+                            for (int v : tt.intList) tempIndices.push_back(v);
+                            weightCount = (int)tempIndices.size();
+                            sw.vertexIndices = tempIndices;
+                            state = 3;
+                        }
+                    } else if (state == 2) {
+                        // Indices ILIST (6)
+                        if (tt.type == 6) {
+                            for (int v : tt.intList) sw.vertexIndices.push_back(v);
+                            weightCount = (int)sw.vertexIndices.size();
+                            state = 3;
+                        }
+                    } else if (state == 3) {
+                        // Weights FLOAT_LIST (7)
+                        if (tt.type == 7) {
+                            sw.weights = tt.floatList;
+                            state = 4;
+                        }
+                    } else if (state == 4) {
+                        // Offset matrix FLIST (16 floats)
+                        if (tt.type == 7 && tt.floatList.size() >= 16) {
+                            sw.offsetMatrix = Mat4::fromFloats16(tt.floatList);
+                            state = 5;
+                            j = k;  // Skip to end of this FLIST
+                            break;
+                        }
+                    }
+                }
+                
+                if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
+                    skinData.skins.push_back(sw);
+                    totalSkinBlocks++;
+                }
+                continue;
+            }
         }
+        
+        // ============ Process this mesh ============
+        if (meshVerts && meshVerts->size() >= 3) {
+            int vc = (int)(meshVerts->size() / 3);
+            int baseVertex = (int)(allVerts.size() / 3);
+            
+            std::vector<Vec3> localVerts(vc);
+            for (int v = 0; v < vc; v++) {
+                localVerts[v] = { (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
+            }
+            
+            std::vector<Vec3> skinned(vc, {0,0,0});
+            std::vector<float> weightSum(vc, 0.0f);
+            bool anySkinApplied = false;
+            
+            if (!skinData.skins.empty()) {
+                for (const auto& skin : skinData.skins) {
+                    auto it = boneWorldTransforms.find(skin.boneName);
+                    if (it == boneWorldTransforms.end()) {
+                        missingBoneCount++;
+                        continue;
+                    }
+                    
+                    Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
+                    
+                    for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
+                        int vi = skin.vertexIndices[k];
+                        float w = skin.weights[k];
+                        if (vi < 0 || vi >= vc) continue;
+                        
+                        Vec3 t = transformPoint(localVerts[vi], boneMatrix);
+                        skinned[vi].x += w * t.x;
+                        skinned[vi].y += w * t.y;
+                        skinned[vi].z += w * t.z;
+                        weightSum[vi] += w;
+                        anySkinApplied = true;
+                    }
+                }
+                
+                for (int v = 0; v < vc; v++) {
+                    if (weightSum[v] < 1e-6f) {
+                        skinned[v] = localVerts[v];
+                    } else if (std::fabs(weightSum[v] - 1.0f) > 1e-3f) {
+                        float inv = 1.0f / weightSum[v];
+                        skinned[v].x *= inv;
+                        skinned[v].y *= inv;
+                        skinned[v].z *= inv;
+                    }
+                }
+                
+                if (anySkinApplied) skinnedMeshCount++;
+            } else {
+                skinned = localVerts;
+            }
+            
+            // Add vertices
+            for (int v = 0; v < vc; v++) {
+                allVerts.push_back(skinned[v].x);
+                allVerts.push_back(skinned[v].y);
+                allVerts.push_back(skinned[v].z);
+                
+                if (!skinData.skins.empty() && anySkinApplied) {
+                    allColors.push_back(1.0f);   // RED — skinned
+                    allColors.push_back(0.2f);
+                    allColors.push_back(0.2f);
+                } else {
+                    allColors.push_back(0.6f);   // GREY — not skinned
+                    allColors.push_back(0.6f);
+                    allColors.push_back(0.6f);
+                }
+            }
+            
+            // Faces
+            if (meshFaces) {
+                const auto& raw = *meshFaces;
+                size_t p = 0;
+                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
+                    while (p < raw.size()) {
+                        uint32_t cnt = raw[p++];
+                        if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
+                        for (uint32_t k = 1; k + 1 < cnt; k++) {
+                            allIdx.push_back((uint32_t)raw[p] + baseVertex);
+                            allIdx.push_back((uint32_t)raw[p + k] + baseVertex);
+                            allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
+                        }
+                        p += cnt;
+                    }
+                } else {
+                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
+                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
+                    }
+                }
+            }
+            
+            // UVs
+            if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
+                allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
+            } else {
+                for (int u = 0; u < vc; u++) {
+                    allUVs.push_back(0.5f);
+                    allUVs.push_back(0.5f);
+                }
+            }
+            
+            meshCount++;
+            NSLog(@"[Santa] Mesh %d: %d v, %lu skins, bones=%d",
+                  meshCount, vc, (unsigned long)skinData.skins.size(), skinData.nBones);
+        }
+        
+        // Skip to end of this Mesh block
+        i = meshEndIdx;
     }
     
     NSLog(@"[Santa] === SUMMARY ===");
-    NSLog(@"[Santa] Meshes: %d, Skinned: %d, Missing bones: %d",
-          meshCount, skinnedMeshCount, missingBoneCount);
-    NSLog(@"[Santa] Total verts: %d", (int)(allVerts.size() / 3));
+    NSLog(@"[Santa] Meshes: %d | Skinned: %d | Skin blocks: %d | Missing bones: %d",
+          meshCount, skinnedMeshCount, totalSkinBlocks, missingBoneCount);
+    NSLog(@"[Santa] Verts: %d | Faces: %d", (int)(allVerts.size() / 3), (int)(allIdx.size() / 3));
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
@@ -455,9 +443,9 @@ struct MeshSkinData {
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = offset;
     mesh.debugInfo = [NSString stringWithFormat:
-                      @"%dM %dS %dMiss\n%d v, %d f",
-                      meshCount, skinnedMeshCount, missingBoneCount,
-                      mesh.vertexCount, mesh.faceCount];
+                      @"%dM %dS %dSK %dMiss\n%d v, %d f | tokens=%lu",
+                      meshCount, skinnedMeshCount, totalSkinBlocks, missingBoneCount,
+                      mesh.vertexCount, mesh.faceCount, (unsigned long)tokens.size()];
     
     return mesh;
 }
