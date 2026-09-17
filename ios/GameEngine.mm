@@ -18,6 +18,7 @@ struct Mat4 {
                 r.m[i][j] = (i == j) ? 1.0f : 0.0f;
         return r;
     }
+    // Row-major read
     static Mat4 fromFloats16(const std::vector<float>& f) {
         Mat4 r{};
         for (int i = 0; i < 16; i++) r.m[i / 4][i % 4] = f[i];
@@ -195,7 +196,7 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 }
             }
             
-            // Filter: only include if current texture is Santa-related (or no texture yet)
+            // Filter: only include if current texture is Santa-related
             std::string lower = currentTexture;
             std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
             bool isTree = (lower.find("tanne") != std::string::npos ||
@@ -262,6 +263,12 @@ static Vec3 transformPoint(const Vec3& v, const Mat4& M) {
                 meshCount++;
                 meshesIncluded++;
                 NSLog(@"[Santa] Mesh %d included: %d v (tex=%s)", meshCount, vc, currentTexture.c_str());
+                
+                // Sirf PEHLA mesh rakhein (most coherent)
+                if (meshesIncluded >= 1) {
+                    NSLog(@"[Santa] Stopping after mesh 1");
+                    break;
+                }
             }
         }
     }
