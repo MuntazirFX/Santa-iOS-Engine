@@ -14,20 +14,19 @@
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [vc.view addSubview:mv];
     
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 100)];
-    tv.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.7];
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 110)];
+    tv.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.75];
     tv.textColor = [UIColor greenColor];
-    tv.font = [UIFont fontWithName:@"Courier" size:11];
+    tv.font = [UIFont fontWithName:@"Courier" size:10];
     tv.editable = NO;
     tv.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     [vc.view addSubview:tv];
     
-    // Santa with frame transforms applied!
     MeshData *mesh = [GameEngine extractSantaWithTransforms:960968];
     
     if (mesh && mesh.vertexCount > 0 && mesh.faceCount > 0) {
         NSString *tex = mesh.textureName ? [mesh.textureName lastPathComponent] : @"(none)";
-        tv.text = [NSString stringWithFormat:@"🎅 SANTA!\n%d v, %d faces\nTex: %@",
+        tv.text = [NSString stringWithFormat:@"🎅 MESH COLOR TEST\n%d v, %d faces\nTex: %@\n\n🔴 Red = Santa | 🟢 Green = Tree\n🟡 Yellow = House | 🔵 Blue = Misc",
                    mesh.vertexCount, mesh.faceCount, tex];
         [mv setMeshToRender:mesh];
     } else {
