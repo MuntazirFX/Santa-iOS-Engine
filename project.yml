@@ -4,23 +4,23 @@ options:
   bundleIdPrefix: com.muntazirfx
 
 targets:
-
   SantaEngine:
     type: application
     platform: iOS
     deploymentTarget: "14.0"
 
     sources:
-      - ios
+      - path: ios
       - path: src
         excludes:
           - "main.cpp"
 
     resources:
-      - assets/xmas.xpk
+      - path: assets/xmas.xpk
 
     settings:
       INFOPLIST_FILE: ios/Info.plist
+      PRODUCT_BUNDLE_IDENTIFIER: com.muntazirfx.santaengine
 
       CODE_SIGNING_ALLOWED: NO
       CODE_SIGNING_REQUIRED: NO
@@ -38,7 +38,6 @@ targets:
 
     dependencies:
       - sdk: UIKit.framework
-      - sdk: Foundation.framework
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
