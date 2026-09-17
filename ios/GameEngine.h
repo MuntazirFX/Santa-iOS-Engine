@@ -6,6 +6,7 @@
 @property (strong, nonatomic) NSMutableData *vertices;
 @property (strong, nonatomic) NSMutableData *indices;
 @property (strong, nonatomic) NSMutableData *uvs;
+@property (strong, nonatomic) NSMutableData *colors;
 @property (nonatomic) NSUInteger offset;
 @property (strong, nonatomic) NSString *textureName;
 @end
