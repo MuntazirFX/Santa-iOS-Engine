@@ -238,11 +238,23 @@ struct SkinWeightsData {
                 continue;
             }
             
-            // SkinWeights — one block per bone
+            // SkinWeights — one block per bone.
+            //
+            // Real layout observed in this archive's compressed .x tokens
+            // (there is NO separate "nWeights" DWORD token — the vertex
+            // index array's own length prefix already carries that count):
+            //   STRING transformNodeName;
+            //   array <int> vertexIndices;      (length = nWeights)
+            //   array <float> [ weights..., offsetMatrix(16 floats) ]
+            // The weights and the bone's 4x4 offset matrix arrive back to
+            // back in a single float array, so split it by vertex count
+            // instead of assuming a fixed matrix size (some exports were
+            // seen with only 15 trailing floats instead of 16).
             if (t.type == 1 && t.name == "SkinWeights") {
                 SkinWeightsData sw;
+                std::vector<float> rawWeights;
                 int d2 = 0; bool e2 = false;
-                int state = 0;
+                int state = 0; // 0=need name, 1=need vertex indices, 2=need weights+matrix blob
                 
                 for (size_t k = j + 1; k < tokens.size(); k++) {
                     const auto& tt = tokens[k];
@@ -257,24 +269,32 @@ struct SkinWeightsData {
                     if (state == 0) {
                         if (tt.type == 2) { sw.boneName = tt.name; state = 1; }
                     } else if (state == 1) {
-                        if (tt.type == 41 || tt.type == 3) { state = 2; }
-                    } else if (state == 2) {
                         if (tt.type == 6) {
                             for (int v : tt.intList) sw.vertexIndices.push_back(v);
+                            state = 2;
+                        }
+                    } else if (state == 2) {
+                        if (tt.type == 7) {
+                            rawWeights = tt.floatList;
                             state = 3;
                         }
-                    } else if (state == 3) {
-                        if (tt.type == 7) {
-                            sw.weights = tt.floatList;
-                            state = 4;
-                        }
-                    } else if (state == 4) {
-                        if (tt.type == 7 && tt.floatList.size() >= 16) {
-                            sw.offsetMatrix = Mat4::fromFloats16(tt.floatList);
-                            state = 5;
-                            j = k;
-                            break;
-                        }
+                    }
+                }
+                
+                if (!rawWeights.empty() && rawWeights.size() >= sw.vertexIndices.size()) {
+                    size_t nW = sw.vertexIndices.size();
+                    sw.weights.assign(rawWeights.begin(), rawWeights.begin() + nW);
+                    std::vector<float> tail(rawWeights.begin() + nW, rawWeights.end());
+                    if (tail.size() >= 16) {
+                        sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(tail.end() - 16, tail.end()));
+                    } else if (!tail.empty()) {
+                        // Fewer than 16 trailing floats — right-align into a
+                        // 16-float buffer so the translation row lands correctly.
+                        std::vector<float> padded(16, 0.0f);
+                        std::copy(tail.begin(), tail.end(), padded.begin() + (16 - tail.size()));
+                        sw.offsetMatrix = Mat4::fromFloats16(padded);
+                    } else {
+                        sw.offsetMatrix = Mat4::identity();
                     }
                 }
                 
