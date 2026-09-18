@@ -211,10 +211,6 @@ struct SkinWeightsData {
         const std::vector<float>* meshUVs = nullptr;
         std::vector<SkinWeightsData> skins;
         
-        // === FIX: Declared counts for vertices and faces ===
-        int declaredVertices = 0;
-        int declaredFaces = 0;
-        
         for (size_t j = i + 1; j < tokens.size(); j++) {
             const auto& t = tokens[j];
             
@@ -223,25 +219,6 @@ struct SkinWeightsData {
                 depth--;
                 if (entered && depth == 0) { meshEndIdx = (int)j; break; }
                 continue;
-            }
-            
-            // === FIX: Lookahead to correctly capture nVertices and nFaces ===
-            // We only capture these if the VERY NEXT token is the actual array.
-            // This prevents grabbing random integers (like material indices).
-            if ((t.type == 3 || t.type == 41) && j + 1 < tokens.size()) {
-                const auto& nextTok = tokens[j + 1];
-                
-                // nVertices -> followed by FLIST (Type 7)
-                if (nextTok.type == 7 && meshVerts == nullptr) {
-                    declaredVertices = (t.type == 3) ? t.intValue : t.dwordValue;
-                    continue;
-                }
-                
-                // nFaces -> followed by ILIST (Type 6)
-                if (nextTok.type == 6 && meshVerts != nullptr && meshFaces == nullptr) {
-                    declaredFaces = (t.type == 3) ? t.intValue : t.dwordValue;
-                    continue;
-                }
             }
             
             if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
@@ -262,6 +239,17 @@ struct SkinWeightsData {
             }
             
             // SkinWeights — one block per bone.
+            //
+            // Real layout observed in this archive's compressed .x tokens
+            // (there is NO separate "nWeights" DWORD token — the vertex
+            // index array's own length prefix already carries that count):
+            //   STRING transformNodeName;
+            //   array <int> vertexIndices;      (length = nWeights)
+            //   array <float> [ weights..., offsetMatrix(16 floats) ]
+            // The weights and the bone's 4x4 offset matrix arrive back to
+            // back in a single float array, so split it by vertex count
+            // instead of assuming a fixed matrix size (some exports were
+            // seen with only 15 trailing floats instead of 16).
             if (t.type == 1 && t.name == "SkinWeights") {
                 SkinWeightsData sw;
                 std::vector<float> rawWeights;
@@ -293,19 +281,32 @@ struct SkinWeightsData {
                     }
                 }
                 
-                if (!rawWeights.empty() && rawWeights.size() >= sw.vertexIndices.size()) {
-                    size_t nW = sw.vertexIndices.size();
+                // The float array after the vertex-index array packs the
+                // per-vertex weights FIRST, followed by the bone's 4x4
+                // offset matrix — but the matrix is ALWAYS exactly the
+                // LAST 16 floats, regardless of how many weights precede
+                // it. (An earlier version of this split assumed the
+                // weights count always equalled vertexIndices.size(),
+                // which was off by one for this archive — it leaked the
+                // matrix's first float into the weights array. That
+                // stray ~±1.0 "weight" occasionally made a vertex's
+                // total blend weight land at a tiny or even negative
+                // sum, and dividing by that near-zero sum during
+                // normalization blew a handful of vertices out to
+                // thousands of units away — exactly the "scattered
+                // pieces" symptom.)
+                if (rawWeights.size() >= 16) {
+                    size_t weightsLen = rawWeights.size() - 16;
+                    weightsLen = std::min(weightsLen, sw.vertexIndices.size());
+                    sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
+                    sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
+                } else if (!rawWeights.empty()) {
+                    // Degenerate case: fewer than 16 floats total, so there's
+                    // no room for a full matrix — treat everything as weights
+                    // and fall back to identity for the offset.
+                    size_t nW = std::min(rawWeights.size(), sw.vertexIndices.size());
                     sw.weights.assign(rawWeights.begin(), rawWeights.begin() + nW);
-                    std::vector<float> tail(rawWeights.begin() + nW, rawWeights.end());
-                    if (tail.size() >= 16) {
-                        sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(tail.end() - 16, tail.end()));
-                    } else if (!tail.empty()) {
-                        std::vector<float> padded(16, 0.0f);
-                        std::copy(tail.begin(), tail.end(), padded.begin() + (16 - tail.size()));
-                        sw.offsetMatrix = Mat4::fromFloats16(padded);
-                    } else {
-                        sw.offsetMatrix = Mat4::identity();
-                    }
+                    sw.offsetMatrix = Mat4::identity();
                 }
                 
                 if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
@@ -318,22 +319,13 @@ struct SkinWeightsData {
         
         // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
-            // === FIX: STRIDE HANDLING ===
-            // Use declaredVertices to figure out stride (3 floats or 4 floats per vertex)
-            int stride = 3;
-            if (declaredVertices > 0) {
-                if (meshVerts->size() == (size_t)declaredVertices * 4) stride = 4;
-                else if (meshVerts->size() == (size_t)declaredVertices * 3) stride = 3;
-            }
-            int vc = declaredVertices > 0 ? declaredVertices : (int)(meshVerts->size() / stride);
-            
+            int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
             totalVertices += vc;
             
             std::vector<Vec3> localVerts(vc);
             for (int v = 0; v < vc; v++) {
-                // Use correct stride so vertices don't stretch/shift
-                localVerts[v] = { (*meshVerts)[v*stride], (*meshVerts)[v*stride+1], (*meshVerts)[v*stride+2] };
+                localVerts[v] = { (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
             }
             
             std::vector<Vec3> skinned(vc, {0,0,0});
@@ -392,23 +384,11 @@ struct SkinWeightsData {
                 }
             }
             
-            // === FIX: FACE FORMAT HANDLING ===
+            // Faces
             if (meshFaces) {
                 const auto& raw = *meshFaces;
-                
-                // If declaredFaces is known and matches exactly, it's a Triangle List
-                bool isTriangleList = (declaredFaces > 0 && raw.size() == (size_t)declaredFaces * 3);
-                
-                if (isTriangleList) {
-                    // Simple Triangle List
-                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
-                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
-                    }
-                } else {
-                    // Standard .x Polygon List (first integer is vertex count)
-                    size_t p = 0;
+                size_t p = 0;
+                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
                     while (p < raw.size()) {
                         uint32_t cnt = raw[p++];
                         if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
@@ -418,6 +398,12 @@ struct SkinWeightsData {
                             allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
                         }
                         p += cnt;
+                    }
+                } else {
+                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
+                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
                     }
                 }
             }
