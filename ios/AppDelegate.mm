@@ -1,6 +1,7 @@
 #import "AppDelegate.h"
 #import "GameEngine.h"
 #import "MetalView.h"
+#import "BuildInfo.h"
 
 @implementation AppDelegate
 
@@ -23,6 +24,10 @@
     [vc.view addSubview:tv];
     
     NSMutableString *log = [NSMutableString string];
+    
+    // ===== Build identity — so a screen recording always shows exactly
+    // which commit produced this binary, no guessing about stale builds =====
+    [log appendFormat:@"Build: %s @ %s\n\n", SANTA_BUILD_SHA, SANTA_BUILD_TIME];
     
     // ===== Load SANTA (correct file) =====
     [log appendString:@"Loading Santa...\n"];
