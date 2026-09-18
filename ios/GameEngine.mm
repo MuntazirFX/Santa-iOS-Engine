@@ -211,6 +211,10 @@ struct SkinWeightsData {
         const std::vector<float>* meshUVs = nullptr;
         std::vector<SkinWeightsData> skins;
         
+        // === FIX: Declared counts for vertices and faces ===
+        int declaredVertices = 0;
+        int declaredFaces = 0;
+        
         for (size_t j = i + 1; j < tokens.size(); j++) {
             const auto& t = tokens[j];
             
@@ -219,6 +223,17 @@ struct SkinWeightsData {
                 depth--;
                 if (entered && depth == 0) { meshEndIdx = (int)j; break; }
                 continue;
+            }
+            
+            // === FIX: Capture nVertices and nFaces before grabbing arrays ===
+            if (t.type == 3 || t.type == 41) {
+                if (declaredVertices == 0) {
+                    declaredVertices = (t.type == 3) ? t.intValue : t.dwordValue;
+                    continue;
+                } else if (declaredFaces == 0) {
+                    declaredFaces = (t.type == 3) ? t.intValue : t.dwordValue;
+                    continue;
+                }
             }
             
             if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
@@ -308,13 +323,21 @@ struct SkinWeightsData {
         
         // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
-            int vc = (int)(meshVerts->size() / 3);
+            // === FIX: STRIDE HANDLING ===
+            int stride = 3;
+            if (declaredVertices > 0) {
+                if (meshVerts->size() == (size_t)declaredVertices * 4) stride = 4;
+                else if (meshVerts->size() == (size_t)declaredVertices * 3) stride = 3;
+            }
+            int vc = declaredVertices > 0 ? declaredVertices : (int)(meshVerts->size() / stride);
+            
             int baseVertex = (int)(allVerts.size() / 3);
             totalVertices += vc;
             
             std::vector<Vec3> localVerts(vc);
             for (int v = 0; v < vc; v++) {
-                localVerts[v] = { (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
+                // Use stride to index correctly
+                localVerts[v] = { (*meshVerts)[v*stride], (*meshVerts)[v*stride+1], (*meshVerts)[v*stride+2] };
             }
             
             std::vector<Vec3> skinned(vc, {0,0,0});
@@ -373,11 +396,23 @@ struct SkinWeightsData {
                 }
             }
             
-            // Faces
+            // === FIX: FACE FORMAT HANDLING ===
             if (meshFaces) {
                 const auto& raw = *meshFaces;
-                size_t p = 0;
-                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
+                
+                // Check if it's a pure Triangle List (nFaces * 3 == total index count)
+                bool isTriangleList = (declaredFaces > 0 && raw.size() == (size_t)declaredFaces * 3);
+                
+                if (isTriangleList) {
+                    // Simple Triangle List
+                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
+                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
+                    }
+                } else {
+                    // Standard .x Polygon List (first integer is vertex count)
+                    size_t p = 0;
                     while (p < raw.size()) {
                         uint32_t cnt = raw[p++];
                         if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
@@ -387,12 +422,6 @@ struct SkinWeightsData {
                             allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
                         }
                         p += cnt;
-                    }
-                } else {
-                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
-                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
                     }
                 }
             }
