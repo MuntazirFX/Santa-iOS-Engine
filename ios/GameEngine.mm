@@ -225,12 +225,20 @@ struct SkinWeightsData {
                 continue;
             }
             
-            // === FIX: Capture nVertices and nFaces before grabbing arrays ===
-            if (t.type == 3 || t.type == 41) {
-                if (declaredVertices == 0) {
+            // === FIX: Lookahead to correctly capture nVertices and nFaces ===
+            // We only capture these if the VERY NEXT token is the actual array.
+            // This prevents grabbing random integers (like material indices).
+            if ((t.type == 3 || t.type == 41) && j + 1 < tokens.size()) {
+                const auto& nextTok = tokens[j + 1];
+                
+                // nVertices -> followed by FLIST (Type 7)
+                if (nextTok.type == 7 && meshVerts == nullptr) {
                     declaredVertices = (t.type == 3) ? t.intValue : t.dwordValue;
                     continue;
-                } else if (declaredFaces == 0) {
+                }
+                
+                // nFaces -> followed by ILIST (Type 6)
+                if (nextTok.type == 6 && meshVerts != nullptr && meshFaces == nullptr) {
                     declaredFaces = (t.type == 3) ? t.intValue : t.dwordValue;
                     continue;
                 }
@@ -254,17 +262,6 @@ struct SkinWeightsData {
             }
             
             // SkinWeights — one block per bone.
-            //
-            // Real layout observed in this archive's compressed .x tokens
-            // (there is NO separate "nWeights" DWORD token — the vertex
-            // index array's own length prefix already carries that count):
-            //   STRING transformNodeName;
-            //   array <int> vertexIndices;      (length = nWeights)
-            //   array <float> [ weights..., offsetMatrix(16 floats) ]
-            // The weights and the bone's 4x4 offset matrix arrive back to
-            // back in a single float array, so split it by vertex count
-            // instead of assuming a fixed matrix size (some exports were
-            // seen with only 15 trailing floats instead of 16).
             if (t.type == 1 && t.name == "SkinWeights") {
                 SkinWeightsData sw;
                 std::vector<float> rawWeights;
@@ -303,8 +300,6 @@ struct SkinWeightsData {
                     if (tail.size() >= 16) {
                         sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(tail.end() - 16, tail.end()));
                     } else if (!tail.empty()) {
-                        // Fewer than 16 trailing floats — right-align into a
-                        // 16-float buffer so the translation row lands correctly.
                         std::vector<float> padded(16, 0.0f);
                         std::copy(tail.begin(), tail.end(), padded.begin() + (16 - tail.size()));
                         sw.offsetMatrix = Mat4::fromFloats16(padded);
@@ -324,6 +319,7 @@ struct SkinWeightsData {
         // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
             // === FIX: STRIDE HANDLING ===
+            // Use declaredVertices to figure out stride (3 floats or 4 floats per vertex)
             int stride = 3;
             if (declaredVertices > 0) {
                 if (meshVerts->size() == (size_t)declaredVertices * 4) stride = 4;
@@ -336,7 +332,7 @@ struct SkinWeightsData {
             
             std::vector<Vec3> localVerts(vc);
             for (int v = 0; v < vc; v++) {
-                // Use stride to index correctly
+                // Use correct stride so vertices don't stretch/shift
                 localVerts[v] = { (*meshVerts)[v*stride], (*meshVerts)[v*stride+1], (*meshVerts)[v*stride+2] };
             }
             
@@ -400,7 +396,7 @@ struct SkinWeightsData {
             if (meshFaces) {
                 const auto& raw = *meshFaces;
                 
-                // Check if it's a pure Triangle List (nFaces * 3 == total index count)
+                // If declaredFaces is known and matches exactly, it's a Triangle List
                 bool isTriangleList = (declaredFaces > 0 && raw.size() == (size_t)declaredFaces * 3);
                 
                 if (isTriangleList) {
