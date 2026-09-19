@@ -113,17 +113,17 @@ std::string resolveTextureXPKPath(const std::string& rawPath) {
     std::transform(base.begin(), base.end(), base.begin(),
                     [](unsigned char c) { return (char)std::tolower(c); });
 
-    // ✅ SAHI MAPPING TABLE
+    // ✅ SAHI MAPPING — Actual XPK filenames ke hisaab se
     if (base == "nicolaus" || base == "weihnachtsmann" || base == "santa")
-        return "maps\\weihnachtsman.dds";
+        return "maps\\nicolaus.dds";           // ✅ FIXED: nicolaus.dds
     if (base == "troll" || base == "wintertroll" || base == "winter_troll")
-        return "maps\\winter_troll.dds";
+        return "maps\\wintertroll.dds";        // ✅ FIXED: wintertroll.dds (no underscore)
     if (base == "rabe" || base == "crow")
         return "maps\\rabe.dds";
     if (base == "schneemann" || base == "snowman")
         return "maps\\schneemann.dds";
     if (base == "extralive")
-        return "maps\\extralive.dds"; // ✅ FIX: Extralive ka apna texture hai
+        return "maps\\extralive.dds";
     if (base == "objects")
         return "maps\\objects.dds";
     if (base == "snow" || base == "plattform")
