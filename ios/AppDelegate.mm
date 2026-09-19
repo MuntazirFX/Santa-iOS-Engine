@@ -25,25 +25,22 @@
     
     NSMutableString *log = [NSMutableString string];
     
-    // ===== Build identity =====
     [log appendFormat:@"Build: %s @ %s\n\n", SANTA_BUILD_SHA, SANTA_BUILD_TIME];
     
-    // ===== Load SANTA =====
     [log appendString:@"Loading Santa...\n"];
     MeshData *mesh = [GameEngine extractMeshFromAsset:@"gfx\\weihnachtsman_000.x"];
     
     if (mesh && mesh.vertexCount > 0) {
         [log appendFormat:@"✅ SANTA LOADED\n%@\n", mesh.debugInfo ?: @""];
         [mv setMeshToRender:mesh];
+        [log appendFormat:@"\n[Texture Debug] %@\n", mv.textureDebugInfo];
     } else {
         [log appendString:@"❌ Santa load failed\n"];
     }
     
-    // ===== List levels =====
     [log appendString:@"\nLevels:\n"];
     [log appendString:[GameEngine listLevelFiles]];
     
-    // ===== List textures (debug) =====
     [log appendString:@"\nTextures:\n"];
     [log appendString:[GameEngine listTextureFiles]];
     
