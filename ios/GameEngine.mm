@@ -119,12 +119,74 @@ struct SkinWeightsData {
     if (decompressed.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
-    NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
-    // PASS 1: Frame hierarchy (skipping for now)
+    // ============================================================
+    // PASS 1: Frame hierarchy → boneWorldTransforms map
+    // ============================================================
     std::unordered_map<std::string, Mat4> boneWorldTransforms;
+    {
+        std::vector<Mat4> worldStack;
+        worldStack.push_back(Mat4::identity());
+        std::vector<char> braceKind;
+        std::vector<std::string> frameNameStack;
+        std::string pendingFrameName = "";
+        bool pendingFrame = false;
+        
+        for (size_t i = 0; i < tokens.size(); i++) {
+            const auto& tok = tokens[i];
+            
+            if (tok.type == 1 && tok.name == "Frame") {
+                pendingFrame = true;
+                continue;
+            }
+            if (pendingFrame && tok.type == 1) {
+                pendingFrameName = tok.name;
+                pendingFrame = false;
+                continue;
+            }
+            if (tok.type == 10) {
+                if (!pendingFrameName.empty()) {
+                    worldStack.push_back(worldStack.back());
+                    braceKind.push_back('F');
+                    frameNameStack.push_back(pendingFrameName);
+                    pendingFrameName = "";
+                } else {
+                    braceKind.push_back('O');
+                    frameNameStack.push_back("");
+                }
+                continue;
+            }
+            if (tok.type == 11) {
+                if (!braceKind.empty()) {
+                    char kind = braceKind.back();
+                    braceKind.pop_back();
+                    if (kind == 'F') {
+                        if (!frameNameStack.empty() && !frameNameStack.back().empty()) {
+                            boneWorldTransforms[frameNameStack.back()] = worldStack.back();
+                        }
+                        worldStack.pop_back();
+                    }
+                    if (!frameNameStack.empty()) frameNameStack.pop_back();
+                }
+                continue;
+            }
+            if (tok.type == 1 && tok.name == "FrameTransformMatrix") {
+                for (size_t j = i + 1; j < std::min(tokens.size(), i + 6); j++) {
+                    if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
+                        Mat4 local = Mat4::fromFloats16(tokens[j].floatList);
+                        Mat4 parentWorld = worldStack.back();
+                        worldStack.back() = mulMat(local, parentWorld);
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+    }
     
-    // PASS 2: Extract Mesh (skinning skipped)
+    // ============================================================
+    // PASS 2: Extract Mesh + apply skinning
+    // ============================================================
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
@@ -134,21 +196,12 @@ struct SkinWeightsData {
     int uvFoundCount = 0;
     int uvMissingCount = 0;
     int totalSkinBlocks = 0;
+    int missingBoneCount = 0;
     std::string firstTextureFileName;
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         if (tok.type != 1 || tok.name != "Mesh") continue;
-        
-        // ✅ DIAGNOSTIC 1: Mesh ke andar pehle 20 tokens print karo
-        NSLog(@"[Mesh] === MESH FOUND at token %zu ===", i);
-        for (size_t dbg = i + 1; dbg < tokens.size() && dbg < i + 20; dbg++) {
-            NSLog(@"[Mesh]   [%zu] type=%d name='%s' ints=%lu floats=%lu intVal=%d",
-                  dbg, tokens[dbg].type, tokens[dbg].name.c_str(),
-                  (unsigned long)tokens[dbg].intList.size(),
-                  (unsigned long)tokens[dbg].floatList.size(),
-                  tokens[dbg].intValue);
-        }
         
         int depth = 0;
         bool entered = false;
@@ -156,6 +209,7 @@ struct SkinWeightsData {
         const std::vector<float>* meshVerts = nullptr;
         const std::vector<int>* meshFaces = nullptr;
         const std::vector<float>* meshUVs = nullptr;
+        std::vector<SkinWeightsData> skins;
         std::string textureFileName;
         
         for (size_t j = i + 1; j < tokens.size(); j++) {
@@ -195,7 +249,55 @@ struct SkinWeightsData {
             }
             
             if (t.type == 1 && t.name == "SkinWeights") {
-                totalSkinBlocks++;
+                SkinWeightsData sw;
+                std::vector<float> rawWeights;
+                int d2 = 0; bool e2 = false;
+                int state = 0; // 0=need name, 1=need vertex indices, 2=need weights+matrix blob
+                
+                for (size_t k = j + 1; k < tokens.size(); k++) {
+                    const auto& tt = tokens[k];
+                    
+                    if (tt.type == 10) { d2++; e2 = true; continue; }
+                    if (tt.type == 11) {
+                        d2--;
+                        if (e2 && d2 == 0) { j = k; break; }
+                        continue;
+                    }
+                    
+                    if (state == 0) {
+                        if (tt.type == 2) { sw.boneName = tt.name; state = 1; }
+                    } else if (state == 1) {
+                        if (tt.type == 6) {
+                            for (int v : tt.intList) sw.vertexIndices.push_back(v);
+                            state = 2;
+                        }
+                    } else if (state == 2) {
+                        if (tt.type == 7) {
+                            rawWeights = tt.floatList;
+                            state = 3;
+                        }
+                    }
+                }
+                
+                // The float array after the vertex-index array packs the
+                // per-vertex weights FIRST, followed by the bone's 4x4
+                // offset matrix — the matrix is ALWAYS exactly the LAST 16
+                // floats, regardless of how many weights precede it.
+                if (rawWeights.size() >= 16) {
+                    size_t weightsLen = rawWeights.size() - 16;
+                    weightsLen = std::min(weightsLen, sw.vertexIndices.size());
+                    sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
+                    sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
+                } else if (!rawWeights.empty()) {
+                    size_t nW = std::min(rawWeights.size(), sw.vertexIndices.size());
+                    sw.weights.assign(rawWeights.begin(), rawWeights.begin() + nW);
+                    sw.offsetMatrix = Mat4::identity();
+                }
+                
+                if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
+                    skins.push_back(sw);
+                    totalSkinBlocks++;
+                }
                 continue;
             }
         }
@@ -204,52 +306,74 @@ struct SkinWeightsData {
             int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
             
-            // ✅ DIAGNOSTIC 2: Vertices aur Faces ke values print karo
-            NSLog(@"[Mesh] Vertices: %d (FLIST size=%lu)", vc, (unsigned long)meshVerts->size());
-            NSLog(@"[Mesh] First 3 vertices: (%.3f,%.3f,%.3f), (%.3f,%.3f,%.3f), (%.3f,%.3f,%.3f)",
-                  (*meshVerts)[0], (*meshVerts)[1], (*meshVerts)[2],
-                  (*meshVerts)[3], (*meshVerts)[4], (*meshVerts)[5],
-                  (*meshVerts)[6], (*meshVerts)[7], (*meshVerts)[8]);
-            
-            if (meshFaces) {
-                NSLog(@"[Mesh] Faces ILIST size=%lu, first 12 values: %d %d %d %d %d %d %d %d %d %d %d %d",
-                      (unsigned long)meshFaces->size(),
-                      (*meshFaces)[0], (*meshFaces)[1], (*meshFaces)[2],
-                      (*meshFaces)[3], (*meshFaces)[4], (*meshFaces)[5],
-                      (*meshFaces)[6], (*meshFaces)[7], (*meshFaces)[8],
-                      (*meshFaces)[9], (*meshFaces)[10], (*meshFaces)[11]);
-            }
-            
-            // Vertices as-is (T-pose)
+            std::vector<Vec3> localVerts(vc);
             for (int v = 0; v < vc; v++) {
-                allVerts.push_back((*meshVerts)[v*3]);
-                allVerts.push_back((*meshVerts)[v*3+1]);
-                allVerts.push_back((*meshVerts)[v*3+2]);
+                localVerts[v] = { (*meshVerts)[v*3], (*meshVerts)[v*3+1], (*meshVerts)[v*3+2] };
+            }
+            
+            // ===== Apply skinning (blend each vertex by its contributing bones) =====
+            std::vector<Vec3> skinned(vc, {0,0,0});
+            std::vector<float> weightSum(vc, 0.0f);
+            
+            for (const auto& skin : skins) {
+                auto it = boneWorldTransforms.find(skin.boneName);
+                if (it == boneWorldTransforms.end()) {
+                    missingBoneCount++;
+                    continue;
+                }
+                Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
+                for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
+                    int vi = skin.vertexIndices[k];
+                    float w = skin.weights[k];
+                    if (vi < 0 || vi >= vc) continue;
+                    Vec3 t = transformPoint(localVerts[vi], boneMatrix);
+                    skinned[vi].x += w * t.x;
+                    skinned[vi].y += w * t.y;
+                    skinned[vi].z += w * t.z;
+                    weightSum[vi] += w;
+                }
+            }
+            for (int v = 0; v < vc; v++) {
+                if (weightSum[v] < 1e-6f) {
+                    skinned[v] = localVerts[v]; // unweighted vertex — use bind pose as-is
+                } else if (std::fabs(weightSum[v] - 1.0f) > 1e-3f) {
+                    float inv = 1.0f / weightSum[v];
+                    skinned[v].x *= inv; skinned[v].y *= inv; skinned[v].z *= inv;
+                }
+            }
+            
+            for (int v = 0; v < vc; v++) {
+                allVerts.push_back(skinned[v].x);
+                allVerts.push_back(skinned[v].y);
+                allVerts.push_back(skinned[v].z);
                 allColors.push_back(1.0f);
                 allColors.push_back(1.0f);
                 allColors.push_back(1.0f);
             }
             
-            if (meshFaces) {
+            // ===== Faces =====
+            // Real layout (verified against actual data): the ILIST is
+            // [nFaces header, then repeating (vertsInFace, idx0, idx1, ...)]
+            // per face — NOT a flat stream of raw index triples. Skipping
+            // the leading header is essential: without it, the header
+            // value itself gets read as a vertex index, which for this
+            // mesh (2016) is far outside the valid 0..vertexCount-1 range
+            // and produces out-of-bounds GPU reads — the "exploded/spiky"
+            // geometry symptom.
+            if (meshFaces && !meshFaces->empty()) {
                 const auto& raw = *meshFaces;
-                size_t p = 0;
-                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
-                    while (p < raw.size()) {
-                        uint32_t cnt = raw[p++];
-                        if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
-                        for (uint32_t k = 1; k + 1 < cnt; k++) {
-                            allIdx.push_back((uint32_t)raw[p] + baseVertex);
-                            allIdx.push_back((uint32_t)raw[p + k] + baseVertex);
-                            allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
-                        }
-                        p += cnt;
+                size_t p = 1; // skip the nFaces header
+                while (p < raw.size()) {
+                    uint32_t cnt = raw[p++];
+                    if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
+                    for (uint32_t k = 1; k + 1 < cnt; k++) {
+                        int i0 = raw[p], i1 = raw[p + k], i2 = raw[p + k + 1];
+                        if (i0 < 0 || i0 >= vc || i1 < 0 || i1 >= vc || i2 < 0 || i2 >= vc) continue;
+                        allIdx.push_back((uint32_t)i0 + baseVertex);
+                        allIdx.push_back((uint32_t)i1 + baseVertex);
+                        allIdx.push_back((uint32_t)i2 + baseVertex);
                     }
-                } else {
-                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
-                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
-                    }
+                    p += cnt;
                 }
             }
             
@@ -296,8 +420,8 @@ struct SkinWeightsData {
     
     NSString *uvStatus = [NSString stringWithFormat:@"UVs: %d OK, %d MISS", uvFoundCount, uvMissingCount];
     mesh.debugInfo = [NSString stringWithFormat:
-                      @"%@\n%dM %dSK(skip) %dMiss\n%d v, %d f\n%@\ntex: %@",
-                      assetName, meshCount, totalSkinBlocks, 0,
+                      @"%@\n%dM %dSK %dMiss\n%d v, %d f\n%@\ntex: %@",
+                      assetName, meshCount, totalSkinBlocks, missingBoneCount,
                       mesh.vertexCount, mesh.faceCount, uvStatus, textureInfo];
     return mesh;
 }
@@ -315,29 +439,126 @@ struct SkinWeightsData {
     return [NSData dataWithBytes:rgba.data() length:rgba.size()];
 }
 
-+ (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath {
-    NSData *data = [self loadAssetNamed:levelPath];
-    if (!data) return @[];
-    const uint8_t *bytes = (const uint8_t *)data.bytes;
-    NSUInteger totalSize = data.length;
-    NSArray *knownNames = @[@"EXTRA LIFE", @"JUMPER", @"PRESENT A",
-                             @"EXIT", @"TROLL", @"HAUS", @"TREE",
-                             @"KAMIN", @"PRESENT", @"TURM", @"HILL"];
-    NSMutableArray<LevelObject *> *objects = [NSMutableArray array];
-    for (NSUInteger i = 0; i + 8 < totalSize; i++) {
-        for (NSString *name in knownNames) {
-            NSData *nameData = [name dataUsingEncoding:NSASCIIStringEncoding];
-            if (i + nameData.length > totalSize) continue;
-            if (memcmp(bytes + i, nameData.bytes, nameData.length) == 0) {
-                LevelObject *obj = [[LevelObject alloc] init];
-                obj.objectName = name;
-                obj.x = 0; obj.y = 0; obj.z = 0;
-                [objects addObject:obj];
-                i += nameData.length;
-                break;
++ (NSDictionary<NSString *, NSArray<NSString *> *> *)loadElementCatalog {
+    // Parses data/elements.txt: repeating blocks of
+    //   ELEMENT   "Name"
+    //   FILE      "gfx\...x"
+    //   ... other KEY value lines ...
+    //   TYPE      ENEMY|RECTFORM|PLATTFORM|DECO|BONUS|EXIT|JUMPER|ELEVATOR|...
+    // Returns name -> [meshFile, elementType] (either may be empty if absent).
+    NSData *data = [self loadAssetNamed:@"data\\elements.txt"];
+    if (!data) return @{};
+    
+    NSString *text = [[NSString alloc] initWithData:data encoding:NSASCIIStringEncoding];
+    if (!text) text = [[NSString alloc] initWithData:data encoding:NSISOLatin1StringEncoding];
+    if (!text) return @{};
+    
+    NSMutableDictionary<NSString *, NSArray<NSString *> *> *catalog = [NSMutableDictionary dictionary];
+    NSArray<NSString *> *lines = [text componentsSeparatedByCharactersInSet:[NSCharacterSet newlineCharacterSet]];
+    
+    NSString *currentName = nil;
+    NSString *currentFile = @"";
+    NSString *currentType = @"";
+    
+    NSCharacterSet *ws = [NSCharacterSet whitespaceCharacterSet];
+    for (NSString *rawLine in lines) {
+        NSString *line = [rawLine stringByTrimmingCharactersInSet:ws];
+        if (line.length == 0) continue;
+        
+        if ([line hasPrefix:@"ELEMENT"]) {
+            // Flush previous element into the catalog before starting a new one.
+            if (currentName) catalog[currentName] = @[currentFile, currentType];
+            currentFile = @""; currentType = @"";
+            
+            NSRange q1 = [line rangeOfString:@"\""];
+            if (q1.location != NSNotFound) {
+                NSRange q2 = [line rangeOfString:@"\"" options:0 range:NSMakeRange(q1.location + 1, line.length - q1.location - 1)];
+                if (q2.location != NSNotFound) {
+                    currentName = [line substringWithRange:NSMakeRange(q1.location + 1, q2.location - q1.location - 1)];
+                } else {
+                    currentName = nil;
+                }
+            } else {
+                currentName = nil;
             }
+        } else if ([line hasPrefix:@"FILE"]) {
+            NSRange q1 = [line rangeOfString:@"\""];
+            if (q1.location != NSNotFound) {
+                NSRange q2 = [line rangeOfString:@"\"" options:0 range:NSMakeRange(q1.location + 1, line.length - q1.location - 1)];
+                if (q2.location != NSNotFound) {
+                    currentFile = [line substringWithRange:NSMakeRange(q1.location + 1, q2.location - q1.location - 1)];
+                }
+            }
+        } else if ([line hasPrefix:@"TYPE"]) {
+            NSString *rest = [line substringFromIndex:4];
+            currentType = [rest stringByTrimmingCharactersInSet:ws];
         }
     }
+    if (currentName) catalog[currentName] = @[currentFile, currentType];
+    
+    return catalog;
+}
+
++ (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath {
+    // Verified binary layout (matches every level file in the archive):
+    //   u32 count
+    //   count records of 60 bytes each:
+    //     char name[32]     — NUL-terminated, padded with 0xCD filler
+    //     float x, y, z     — world position
+    //     float e1, e2, e3  — second float triplet (rotation or a linked
+    //                         point for movers/elevators — exact per-type
+    //                         meaning not yet confirmed at runtime)
+    //     int32 variant
+    NSData *data = [self loadAssetNamed:levelPath];
+    if (!data || data.length < 4) return @[];
+    
+    const uint8_t *bytes = (const uint8_t *)data.bytes;
+    NSUInteger totalSize = data.length;
+    
+    uint32_t count;
+    memcpy(&count, bytes, 4);
+    
+    const NSUInteger recordSize = 60;
+    NSUInteger expected = 4 + (NSUInteger)count * recordSize;
+    if (count == 0 || count > 100000 || expected != totalSize) {
+        // Doesn't match the verified format — bail out rather than guess.
+        return @[];
+    }
+    
+    NSDictionary<NSString *, NSArray<NSString *> *> *catalog = [self loadElementCatalog];
+    NSMutableArray<LevelObject *> *objects = [NSMutableArray arrayWithCapacity:count];
+    
+    NSUInteger p = 4;
+    for (uint32_t i = 0; i < count; i++) {
+        const uint8_t *rec = bytes + p;
+        
+        // Name: NUL-terminated within the 32-byte field.
+        size_t nameLen = 0;
+        while (nameLen < 32 && rec[nameLen] != 0) nameLen++;
+        NSString *name = [[NSString alloc] initWithBytes:rec length:nameLen encoding:NSASCIIStringEncoding];
+        if (!name) name = @"";
+        
+        float f[6];
+        memcpy(f, rec + 32, sizeof(f));
+        int32_t variant;
+        memcpy(&variant, rec + 56, 4);
+        
+        LevelObject *obj = [[LevelObject alloc] init];
+        obj.objectName = name;
+        obj.x = f[0]; obj.y = f[1]; obj.z = f[2];
+        obj.extra1 = f[3]; obj.extra2 = f[4]; obj.extra3 = f[5];
+        obj.variant = variant;
+        
+        NSArray<NSString *> *info = catalog[name];
+        if (info) {
+            obj.meshFile = info[0].length > 0 ? info[0] : nil;
+            obj.elementType = info[1];
+        }
+        
+        [objects addObject:obj];
+        p += recordSize;
+    }
+    
     return objects;
 }
 

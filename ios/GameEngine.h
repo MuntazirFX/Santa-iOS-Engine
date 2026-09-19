@@ -15,6 +15,14 @@
 @interface LevelObject : NSObject
 @property (strong, nonatomic) NSString *objectName;
 @property (nonatomic) float x, y, z;
+// Second float triplet from the level record — position of a linked/second
+// point for movers & elevators in some element types, rotation for others;
+// exact per-type meaning isn't confirmed yet, exposed as raw values.
+@property (nonatomic) float extra1, extra2, extra3;
+@property (nonatomic) int32_t variant;
+// Resolved via the data/elements.txt catalog (ELEMENT "objectName" { FILE "..." }).
+@property (strong, nonatomic) NSString *meshFile;
+@property (strong, nonatomic) NSString *elementType; // e.g. ENEMY, RECTFORM, PLATTFORM, DECO, BONUS, EXIT...
 @end
 
 @interface GameEngine : NSObject
@@ -26,4 +34,8 @@
 + (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath
                              width:(int *)outWidth
                             height:(int *)outHeight;
+// Parses data/elements.txt (the ELEMENT catalog) into name -> mesh-file /
+// element-type info, used by parseLevelData: to resolve each placed
+// object's actual .x model and behavior category.
++ (NSDictionary<NSString *, NSArray<NSString *> *> *)loadElementCatalog;
 @end
