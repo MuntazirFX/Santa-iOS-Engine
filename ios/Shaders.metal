@@ -15,7 +15,7 @@ vertex VertexOut mesh_vertex(const device float *data [[buffer(0)]],
     uint base = vid * 8;  // 3 pos + 2 uv + 3 color
     float3 pos = float3(data[base], data[base+1], data[base+2]);
     
-    // Rotate around Y axis
+    // Rotate around Y axis (debug spin — remove for final game)
     float c = cos(angle);
     float s = sin(angle);
     float3 r;
@@ -33,5 +33,18 @@ fragment float4 mesh_fragment(VertexOut in [[stage_in]],
                                texture2d<float> tex [[texture(0)]],
                                sampler samp [[sampler(0)]]) {
     float4 texColor = tex.sample(samp, in.uv);
+    
+    // ============================================================
+    // White-fallback detection: when the mesh has no texture (or
+    // decoding failed), MetalView binds a 1x1 pure-white texture.
+    // In that case, fall back to the vertex color (grey/red debug
+    // color) instead of multiplying white * color (which would
+    // give a flat white silhouette).
+    // ============================================================
+    if (texColor.r > 0.99 && texColor.g > 0.99 && texColor.b > 0.99 && texColor.a > 0.99) {
+        return float4(in.color, 1.0);
+    }
+    
+    // Real texture — multiply by vertex color (usually white now)
     return float4(texColor.rgb * in.color, texColor.a);
 }
