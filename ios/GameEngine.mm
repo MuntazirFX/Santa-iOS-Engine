@@ -122,12 +122,8 @@ struct SkinWeightsData {
         return nil;
     }
     
-    NSLog(@"[Santa] File loaded: %lu bytes", (unsigned long)fileData.size());
-    
     std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(fileData.data(), fileData.size());
     if (decompressed.size() < 16) return nil;
-    
-    NSLog(@"[Santa] Decompressed: %lu bytes", (unsigned long)decompressed.size());
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
@@ -282,20 +278,14 @@ struct SkinWeightsData {
                     }
                     
                     if (state == 0) {
-                        if (tt.type == 2 || tt.type == 1) {
-                            sw.boneName = tt.name;
-                            state = 1;
-                        }
+                        if (tt.type == 2 || tt.type == 1) { sw.boneName = tt.name; state = 1; }
                     } else if (state == 1) {
                         if (tt.type == 6) {
                             for (int v : tt.intList) sw.vertexIndices.push_back(v);
                             state = 2;
                         }
                     } else if (state == 2) {
-                        if (tt.type == 7) {
-                            rawWeights = tt.floatList;
-                            state = 3;
-                        }
+                        if (tt.type == 7) { rawWeights = tt.floatList; state = 3; }
                     }
                 }
                 
@@ -335,10 +325,7 @@ struct SkinWeightsData {
             
             for (const auto& skin : skins) {
                 auto it = boneWorldTransforms.find(skin.boneName);
-                if (it == boneWorldTransforms.end()) {
-                    missingBoneCount++;
-                    continue;
-                }
+                if (it == boneWorldTransforms.end()) { missingBoneCount++; continue; }
                 
                 Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
                 
@@ -409,11 +396,8 @@ struct SkinWeightsData {
             // ===== UVs with diagnostic =====
             if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
                 allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
-                NSLog(@"[Santa] UVs OK: mesh %d, %lu values for %d verts", meshCount, (unsigned long)meshUVs->size(), vc);
                 uvFoundCount++;
             } else {
-                NSLog(@"[Santa] UVs MISSING: mesh %d, meshUVs=%p size=%lu, needed=%d",
-                      meshCount, meshUVs, meshUVs ? (unsigned long)meshUVs->size() : 0, vc*2);
                 uvMissingCount++;
                 for (int u = 0; u < vc; u++) {
                     allUVs.push_back(0.5f);
@@ -423,7 +407,6 @@ struct SkinWeightsData {
             
             if (firstTextureFileName.empty() && !textureFileName.empty()) {
                 firstTextureFileName = textureFileName;
-                NSLog(@"[Santa] Texture from mesh: %s", textureFileName.c_str());
             }
             
             meshCount++;
@@ -432,16 +415,12 @@ struct SkinWeightsData {
         i = meshEndIdx;
     }
     
-    NSLog(@"[Santa] Meshes: %d | SkinBlocks: %d | MissingBones: %d | Verts: %d | UVs OK: %d | UVs Miss: %d",
-          meshCount, totalSkinBlocks, missingBoneCount, totalVertices, uvFoundCount, uvMissingCount);
-    
     if (firstTextureFileName.empty()) {
         for (size_t i = 0; i < tokens.size(); i++) {
             if (tokens[i].type == 1 && tokens[i].name == "TextureFilename") {
                 for (size_t j = i + 1; j < tokens.size() && j < i + 5; j++) {
                     if (tokens[j].type == 2 || tokens[j].type == 1 || tokens[j].type == 50) {
                         firstTextureFileName = tokens[j].name;
-                        NSLog(@"[Santa] Texture from fallback: %s", firstTextureFileName.c_str());
                         break;
                     }
                 }
@@ -452,7 +431,6 @@ struct SkinWeightsData {
     
     if (firstTextureFileName.empty() && [assetName containsString:@"weihnachtsman"]) {
         firstTextureFileName = "Nicolaus.bmp";
-        NSLog(@"[Santa] Texture hardcoded fallback: Nicolaus.bmp");
     }
     
     if (allVerts.empty() || allIdx.empty()) return nil;
@@ -473,37 +451,26 @@ struct SkinWeightsData {
         textureInfo = mesh.textureName;
     }
     
+    // ✅ FIX: UV status ko debugInfo mein add karo
+    NSString *uvStatus = [NSString stringWithFormat:@"UVs: %d OK, %d MISS", uvFoundCount, uvMissingCount];
     mesh.debugInfo = [NSString stringWithFormat:
-                      @"%@\n%dM %dSK %dMiss\n%d v, %d f\ntex: %@",
+                      @"%@\n%dM %dSK %dMiss\n%d v, %d f\n%@\ntex: %@",
                       assetName, meshCount, totalSkinBlocks, missingBoneCount,
-                      mesh.vertexCount, mesh.faceCount, textureInfo];
+                      mesh.vertexCount, mesh.faceCount, uvStatus, textureInfo];
     
     return mesh;
 }
 
 + (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath width:(int *)outWidth height:(int *)outHeight {
-    if (!xpkPath) {
-        NSLog(@"[Texture] Path is nil");
-        return nil;
-    }
+    if (!xpkPath) return nil;
     
     NSData *fileData = [self loadAssetNamed:xpkPath];
-    if (!fileData || fileData.length == 0) {
-        NSLog(@"[Texture] NOT FOUND in XPK: %@", xpkPath);
-        return nil;
-    }
-    
-    NSLog(@"[Texture] Found: %@ (%lu bytes)", xpkPath, (unsigned long)fileData.length);
+    if (!fileData || fileData.length == 0) return nil;
     
     std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) {
-        NSLog(@"[Texture] DDS decode FAILED: %@", xpkPath);
-        return nil;
-    }
-    
-    NSLog(@"[Texture] Decoded OK: %dx%d", w, h);
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
     
     if (outWidth) *outWidth = w;
     if (outHeight) *outHeight = h;
