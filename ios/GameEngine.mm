@@ -91,6 +91,24 @@ struct SkinWeightsData {
     return out;
 }
 
+// ============ List all texture files (for debugging) ============
++ (NSString *)listTextureFiles {
+    NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    if (!p) return @"No XPK";
+    AssetManager am;
+    if (!am.loadXPK([p UTF8String])) return @"XPK load failed";
+    std::vector<std::string> all = am.getAllFilenames();
+    NSMutableString *out = [NSMutableString string];
+    for (const auto& n : all) {
+        if (n.find(".tga") != std::string::npos ||
+            n.find(".dds") != std::string::npos ||
+            n.find(".bmp") != std::string::npos) {
+            [out appendFormat:@"%s\n", n.c_str()];
+        }
+    }
+    return out;
+}
+
 // ============ LOAD SANTA MESH (from named asset) ============
 + (MeshData *)extractMeshFromAsset:(NSString *)assetName {
     // Load the file by name from XPK
@@ -198,13 +216,12 @@ struct SkinWeightsData {
     int totalSkinBlocks = 0;
     int missingBoneCount = 0;
     int totalVertices = 0;
-    std::string firstTextureFileName; // texture path of the first mesh that has one
+    std::string firstTextureFileName;
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         if (tok.type != 1 || tok.name != "Mesh") continue;
         
-        // ===== Parse Mesh template =====
         int depth = 0;
         bool entered = false;
         int meshEndIdx = (int)tokens.size();
@@ -212,7 +229,7 @@ struct SkinWeightsData {
         const std::vector<int>* meshFaces = nullptr;
         const std::vector<float>* meshUVs = nullptr;
         std::vector<SkinWeightsData> skins;
-        std::string textureFileName; // raw path from the .x file's TextureFilename, e.g. "D:\...\Nicolaus.bmp"
+        std::string textureFileName;
         
         for (size_t j = i + 1; j < tokens.size(); j++) {
             const auto& t = tokens[j];
@@ -228,9 +245,6 @@ struct SkinWeightsData {
             if (t.type == 6 && meshVerts && !meshFaces) { meshFaces = &t.intList; continue; }
             
             if (t.type == 1 && t.name == "TextureFilename" && textureFileName.empty()) {
-                // Layout: NAME "TextureFilename" { STRING "..." } — peek ahead
-                // for the STRING without disturbing the outer loop's depth
-                // tracking (the { and } either side are still processed normally).
                 for (size_t k = j + 1; k < tokens.size() && k < j + 5; k++) {
                     if (tokens[k].type == 2) { textureFileName = tokens[k].name; break; }
                 }
@@ -251,23 +265,11 @@ struct SkinWeightsData {
                 continue;
             }
             
-            // SkinWeights — one block per bone.
-            //
-            // Real layout observed in this archive's compressed .x tokens
-            // (there is NO separate "nWeights" DWORD token — the vertex
-            // index array's own length prefix already carries that count):
-            //   STRING transformNodeName;
-            //   array <int> vertexIndices;      (length = nWeights)
-            //   array <float> [ weights..., offsetMatrix(16 floats) ]
-            // The weights and the bone's 4x4 offset matrix arrive back to
-            // back in a single float array, so split it by vertex count
-            // instead of assuming a fixed matrix size (some exports were
-            // seen with only 15 trailing floats instead of 16).
             if (t.type == 1 && t.name == "SkinWeights") {
                 SkinWeightsData sw;
                 std::vector<float> rawWeights;
                 int d2 = 0; bool e2 = false;
-                int state = 0; // 0=need name, 1=need vertex indices, 2=need weights+matrix blob
+                int state = 0;
                 
                 for (size_t k = j + 1; k < tokens.size(); k++) {
                     const auto& tt = tokens[k];
@@ -294,29 +296,12 @@ struct SkinWeightsData {
                     }
                 }
                 
-                // The float array after the vertex-index array packs the
-                // per-vertex weights FIRST, followed by the bone's 4x4
-                // offset matrix — but the matrix is ALWAYS exactly the
-                // LAST 16 floats, regardless of how many weights precede
-                // it. (An earlier version of this split assumed the
-                // weights count always equalled vertexIndices.size(),
-                // which was off by one for this archive — it leaked the
-                // matrix's first float into the weights array. That
-                // stray ~±1.0 "weight" occasionally made a vertex's
-                // total blend weight land at a tiny or even negative
-                // sum, and dividing by that near-zero sum during
-                // normalization blew a handful of vertices out to
-                // thousands of units away — exactly the "scattered
-                // pieces" symptom.)
                 if (rawWeights.size() >= 16) {
                     size_t weightsLen = rawWeights.size() - 16;
                     weightsLen = std::min(weightsLen, sw.vertexIndices.size());
                     sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
                     sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
                 } else if (!rawWeights.empty()) {
-                    // Degenerate case: fewer than 16 floats total, so there's
-                    // no room for a full matrix — treat everything as weights
-                    // and fall back to identity for the offset.
                     size_t nW = std::min(rawWeights.size(), sw.vertexIndices.size());
                     sw.weights.assign(rawWeights.begin(), rawWeights.begin() + nW);
                     sw.offsetMatrix = Mat4::identity();
@@ -330,7 +315,6 @@ struct SkinWeightsData {
             }
         }
         
-        // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
             int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
@@ -380,21 +364,25 @@ struct SkinWeightsData {
                 }
             }
             
-            // Vertices — red if skinned
+            // ============================================================
+            // FIX: Vertex colors must be WHITE so texture is not tinted.
+            // Previous code used (1.0, 0.2, 0.2) — a red tint meant to
+            // visually distinguish skinned vertices. But since the
+            // fragment shader multiplies texture × vertex color,
+            // Santa rendered completely red instead of showing his
+            // texture. We now use white for all vertices.
+            // ============================================================
             for (int v = 0; v < vc; v++) {
                 allVerts.push_back(skinned[v].x);
                 allVerts.push_back(skinned[v].y);
                 allVerts.push_back(skinned[v].z);
                 
-                if (anySkin) {
-                    allColors.push_back(1.0f);
-                    allColors.push_back(0.2f);
-                    allColors.push_back(0.2f);
-                } else {
-                    allColors.push_back(0.6f);
-                    allColors.push_back(0.6f);
-                    allColors.push_back(0.6f);
-                }
+                // White — texture will pass through unchanged
+                allColors.push_back(1.0f);
+                allColors.push_back(1.0f);
+                allColors.push_back(1.0f);
+                
+                (void)anySkin; // silenced — kept for future debug use
             }
             
             // Faces
@@ -455,11 +443,20 @@ struct SkinWeightsData {
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = 0;
     
+    // ============================================================
+    // FIX: Add debug logs for texture path resolution so we can
+    // see exactly what the .x file references and what we resolved
+    // it to inside the XPK archive.
+    // ============================================================
     NSString *textureInfo = @"no texture";
     if (!firstTextureFileName.empty()) {
+        NSLog(@"[Santa] Raw texture path from .x: %s", firstTextureFileName.c_str());
         std::string xpkPath = TextureLoader::resolveTextureXPKPath(firstTextureFileName);
+        NSLog(@"[Santa] Resolved XPK path: %s", xpkPath.c_str());
         mesh.textureName = [NSString stringWithUTF8String:xpkPath.c_str()];
         textureInfo = mesh.textureName;
+    } else {
+        NSLog(@"[Santa] No TextureFilename token found in .x file");
     }
     
     mesh.debugInfo = [NSString stringWithFormat:
@@ -474,12 +471,18 @@ struct SkinWeightsData {
     if (!xpkPath) return nil;
     
     NSData *fileData = [self loadAssetNamed:xpkPath];
-    if (!fileData || fileData.length == 0) return nil;
+    if (!fileData || fileData.length == 0) {
+        NSLog(@"[GameEngine] Texture file not found in XPK: %@", xpkPath);
+        return nil;
+    }
     
     std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) {
+        NSLog(@"[GameEngine] DDS decode failed: %@", xpkPath);
+        return nil;
+    }
     
     if (outWidth) *outWidth = w;
     if (outHeight) *outHeight = h;
@@ -496,7 +499,6 @@ struct SkinWeightsData {
     
     NSLog(@"[Level] %@: %lu bytes", levelPath, (unsigned long)totalSize);
     
-    // Known object names from level data
     NSArray *knownNames = @[@"EXTRA LIFE", @"JUMPER", @"PRESENT A",
                              @"EXIT", @"TROLL", @"HAUS", @"TREE",
                              @"KAMIN", @"PRESENT", @"TURM", @"HILL"];
