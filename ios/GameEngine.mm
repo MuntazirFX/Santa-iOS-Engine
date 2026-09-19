@@ -91,24 +91,6 @@ struct SkinWeightsData {
     return out;
 }
 
-// ============ List all texture files (for debugging) ============
-+ (NSString *)listTextureFiles {
-    NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
-    if (!p) return @"No XPK";
-    AssetManager am;
-    if (!am.loadXPK([p UTF8String])) return @"XPK load failed";
-    std::vector<std::string> all = am.getAllFilenames();
-    NSMutableString *out = [NSMutableString string];
-    for (const auto& n : all) {
-        if (n.find(".tga") != std::string::npos ||
-            n.find(".dds") != std::string::npos ||
-            n.find(".bmp") != std::string::npos) {
-            [out appendFormat:@"%s\n", n.c_str()];
-        }
-    }
-    return out;
-}
-
 // ============ LOAD SANTA MESH (from named asset) ============
 + (MeshData *)extractMeshFromAsset:(NSString *)assetName {
     // Load the file by name from XPK
@@ -216,12 +198,13 @@ struct SkinWeightsData {
     int totalSkinBlocks = 0;
     int missingBoneCount = 0;
     int totalVertices = 0;
-    std::string firstTextureFileName;
+    std::string firstTextureFileName; // texture path of the first mesh that has one
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         if (tok.type != 1 || tok.name != "Mesh") continue;
         
+        // ===== Parse Mesh template =====
         int depth = 0;
         bool entered = false;
         int meshEndIdx = (int)tokens.size();
@@ -229,7 +212,7 @@ struct SkinWeightsData {
         const std::vector<int>* meshFaces = nullptr;
         const std::vector<float>* meshUVs = nullptr;
         std::vector<SkinWeightsData> skins;
-        std::string textureFileName;
+        std::string textureFileName; // raw path from the .x file's TextureFilename
         
         for (size_t j = i + 1; j < tokens.size(); j++) {
             const auto& t = tokens[j];
@@ -269,7 +252,7 @@ struct SkinWeightsData {
                 SkinWeightsData sw;
                 std::vector<float> rawWeights;
                 int d2 = 0; bool e2 = false;
-                int state = 0;
+                int state = 0; 
                 
                 for (size_t k = j + 1; k < tokens.size(); k++) {
                     const auto& tt = tokens[k];
@@ -315,6 +298,7 @@ struct SkinWeightsData {
             }
         }
         
+        // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
             int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
@@ -364,25 +348,22 @@ struct SkinWeightsData {
                 }
             }
             
-            // ============================================================
-            // FIX: Vertex colors must be WHITE so texture is not tinted.
-            // Previous code used (1.0, 0.2, 0.2) — a red tint meant to
-            // visually distinguish skinned vertices. But since the
-            // fragment shader multiplies texture × vertex color,
-            // Santa rendered completely red instead of showing his
-            // texture. We now use white for all vertices.
-            // ============================================================
+            // Vertices
             for (int v = 0; v < vc; v++) {
                 allVerts.push_back(skinned[v].x);
                 allVerts.push_back(skinned[v].y);
                 allVerts.push_back(skinned[v].z);
                 
-                // White — texture will pass through unchanged
-                allColors.push_back(1.0f);
-                allColors.push_back(1.0f);
-                allColors.push_back(1.0f);
-                
-                (void)anySkin; // silenced — kept for future debug use
+                // ✅ FIX 3: Skinned vertices ko White color do, Red nahi
+                if (anySkin) {
+                    allColors.push_back(1.0f);
+                    allColors.push_back(1.0f);
+                    allColors.push_back(1.0f);
+                } else {
+                    allColors.push_back(0.6f);
+                    allColors.push_back(0.6f);
+                    allColors.push_back(0.6f);
+                }
             }
             
             // Faces
@@ -443,20 +424,11 @@ struct SkinWeightsData {
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = 0;
     
-    // ============================================================
-    // FIX: Add debug logs for texture path resolution so we can
-    // see exactly what the .x file references and what we resolved
-    // it to inside the XPK archive.
-    // ============================================================
     NSString *textureInfo = @"no texture";
     if (!firstTextureFileName.empty()) {
-        NSLog(@"[Santa] Raw texture path from .x: %s", firstTextureFileName.c_str());
         std::string xpkPath = TextureLoader::resolveTextureXPKPath(firstTextureFileName);
-        NSLog(@"[Santa] Resolved XPK path: %s", xpkPath.c_str());
         mesh.textureName = [NSString stringWithUTF8String:xpkPath.c_str()];
         textureInfo = mesh.textureName;
-    } else {
-        NSLog(@"[Santa] No TextureFilename token found in .x file");
     }
     
     mesh.debugInfo = [NSString stringWithFormat:
@@ -471,18 +443,12 @@ struct SkinWeightsData {
     if (!xpkPath) return nil;
     
     NSData *fileData = [self loadAssetNamed:xpkPath];
-    if (!fileData || fileData.length == 0) {
-        NSLog(@"[GameEngine] Texture file not found in XPK: %@", xpkPath);
-        return nil;
-    }
+    if (!fileData || fileData.length == 0) return nil;
     
     std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) {
-        NSLog(@"[GameEngine] DDS decode failed: %@", xpkPath);
-        return nil;
-    }
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
     
     if (outWidth) *outWidth = w;
     if (outHeight) *outHeight = h;
