@@ -433,7 +433,7 @@ struct SkinWeightsData {
                 NSLog(@"[Santa] Missing bone: %s", skin.boneName.c_str());
                 continue;
             }
-            Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
+            Mat4 boneMatrix = mulMat(it->second, skin.offsetMatrix);   // ✅ SAHI ORDER
             for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
                 int vi = skin.vertexIndices[k];
                 float w = skin.weights[k];
