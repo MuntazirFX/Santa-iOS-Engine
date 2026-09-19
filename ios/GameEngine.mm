@@ -107,7 +107,7 @@ struct SkinWeightsData {
     return out;
 }
 
-// ============ LOAD SANTA MESH (from named asset) ============
+// ============ LOAD SANTA MESH ============
 + (MeshData *)extractMeshFromAsset:(NSString *)assetName {
     NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!p) return nil;
@@ -211,6 +211,8 @@ struct SkinWeightsData {
     int totalSkinBlocks = 0;
     int missingBoneCount = 0;
     int totalVertices = 0;
+    int uvFoundCount = 0;
+    int uvMissingCount = 0;
     std::string firstTextureFileName;
     
     for (size_t i = 0; i < tokens.size(); i++) {
@@ -239,7 +241,6 @@ struct SkinWeightsData {
             if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
             if (t.type == 6 && meshVerts && !meshFaces) { meshFaces = &t.intList; continue; }
             
-            // ✅ FIX: TextureFilename — type 2 (STRING), 1 (NAME), ya 50 (CSTRING) accept karo
             if (t.type == 1 && t.name == "TextureFilename" && textureFileName.empty()) {
                 for (size_t k = j + 1; k < tokens.size() && k < j + 5; k++) {
                     if (tokens[k].type == 2 || tokens[k].type == 1 || tokens[k].type == 50) {
@@ -281,7 +282,6 @@ struct SkinWeightsData {
                     }
                     
                     if (state == 0) {
-                        // ✅ FIX: Bone name type 2 (STRING) ya type 1 (NAME) ho sakta hai
                         if (tt.type == 2 || tt.type == 1) {
                             sw.boneName = tt.name;
                             state = 1;
@@ -337,7 +337,6 @@ struct SkinWeightsData {
                 auto it = boneWorldTransforms.find(skin.boneName);
                 if (it == boneWorldTransforms.end()) {
                     missingBoneCount++;
-                    NSLog(@"[Santa] Missing bone: %s", skin.boneName.c_str());
                     continue;
                 }
                 
@@ -373,7 +372,6 @@ struct SkinWeightsData {
                 allVerts.push_back(skinned[v].y);
                 allVerts.push_back(skinned[v].z);
                 
-                // ✅ FIX: Skinned vertices ko WHITE color do (pehle RED tha)
                 if (anySkin) {
                     allColors.push_back(1.0f);
                     allColors.push_back(1.0f);
@@ -408,9 +406,15 @@ struct SkinWeightsData {
                 }
             }
             
+            // ===== UVs with diagnostic =====
             if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
                 allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
+                NSLog(@"[Santa] UVs OK: mesh %d, %lu values for %d verts", meshCount, (unsigned long)meshUVs->size(), vc);
+                uvFoundCount++;
             } else {
+                NSLog(@"[Santa] UVs MISSING: mesh %d, meshUVs=%p size=%lu, needed=%d",
+                      meshCount, meshUVs, meshUVs ? (unsigned long)meshUVs->size() : 0, vc*2);
+                uvMissingCount++;
                 for (int u = 0; u < vc; u++) {
                     allUVs.push_back(0.5f);
                     allUVs.push_back(0.5f);
@@ -419,6 +423,7 @@ struct SkinWeightsData {
             
             if (firstTextureFileName.empty() && !textureFileName.empty()) {
                 firstTextureFileName = textureFileName;
+                NSLog(@"[Santa] Texture from mesh: %s", textureFileName.c_str());
             }
             
             meshCount++;
@@ -427,19 +432,16 @@ struct SkinWeightsData {
         i = meshEndIdx;
     }
     
-    NSLog(@"[Santa] Meshes: %d | SkinBlocks: %d | MissingBones: %d | Verts: %d",
-          meshCount, totalSkinBlocks, missingBoneCount, totalVertices);
+    NSLog(@"[Santa] Meshes: %d | SkinBlocks: %d | MissingBones: %d | Verts: %d | UVs OK: %d | UVs Miss: %d",
+          meshCount, totalSkinBlocks, missingBoneCount, totalVertices, uvFoundCount, uvMissingCount);
     
-    // ============================================================
-    // ✅ FALLBACK 1: Agar mesh ke andar TextureFilename nahi mila,
-    // toh poore token list mein dhoondho.
-    // ============================================================
     if (firstTextureFileName.empty()) {
         for (size_t i = 0; i < tokens.size(); i++) {
             if (tokens[i].type == 1 && tokens[i].name == "TextureFilename") {
                 for (size_t j = i + 1; j < tokens.size() && j < i + 5; j++) {
                     if (tokens[j].type == 2 || tokens[j].type == 1 || tokens[j].type == 50) {
                         firstTextureFileName = tokens[j].name;
+                        NSLog(@"[Santa] Texture from fallback: %s", firstTextureFileName.c_str());
                         break;
                     }
                 }
@@ -448,13 +450,9 @@ struct SkinWeightsData {
         }
     }
     
-    // ============================================================
-    // ✅ FALLBACK 2 (HARDCODED): Agar ab bhi kuch nahi mila, toh Santa ke liye
-    // "Nicolaus.bmp" use karo, jo TextureLoader mein
-    // "maps\weihnachtsman.dds" se map hota hai.
-    // ============================================================
     if (firstTextureFileName.empty() && [assetName containsString:@"weihnachtsman"]) {
         firstTextureFileName = "Nicolaus.bmp";
+        NSLog(@"[Santa] Texture hardcoded fallback: Nicolaus.bmp");
     }
     
     if (allVerts.empty() || allIdx.empty()) return nil;
@@ -484,15 +482,28 @@ struct SkinWeightsData {
 }
 
 + (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath width:(int *)outWidth height:(int *)outHeight {
-    if (!xpkPath) return nil;
+    if (!xpkPath) {
+        NSLog(@"[Texture] Path is nil");
+        return nil;
+    }
     
     NSData *fileData = [self loadAssetNamed:xpkPath];
-    if (!fileData || fileData.length == 0) return nil;
+    if (!fileData || fileData.length == 0) {
+        NSLog(@"[Texture] NOT FOUND in XPK: %@", xpkPath);
+        return nil;
+    }
+    
+    NSLog(@"[Texture] Found: %@ (%lu bytes)", xpkPath, (unsigned long)fileData.length);
     
     std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) {
+        NSLog(@"[Texture] DDS decode FAILED: %@", xpkPath);
+        return nil;
+    }
+    
+    NSLog(@"[Texture] Decoded OK: %dx%d", w, h);
     
     if (outWidth) *outWidth = w;
     if (outHeight) *outHeight = h;
@@ -524,7 +535,6 @@ struct SkinWeightsData {
                 obj.objectName = name;
                 obj.x = 0; obj.y = 0; obj.z = 0;
                 [objects addObject:obj];
-                NSLog(@"[Level] Found '%@' at offset %lu", name, (unsigned long)i);
                 i += nameData.length;
                 break;
             }
