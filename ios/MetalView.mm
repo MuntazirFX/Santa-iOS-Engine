@@ -101,7 +101,7 @@
         vb[i*8+2] = (verts[i*3+2]-cz)*s;
         if (uvs) {
             vb[i*8+3] = uvs[i*2+0];
-            vb[i*8+4] = 1.0f - uvs[i*2+1]; // ✅ FIX: V-Flip for Metal
+            vb[i*8+4] = 1.0f - uvs[i*2+1];
         } else {
             vb[i*8+3] = 0.5f;
             vb[i*8+4] = 0.5f;
@@ -125,9 +125,11 @@
     id<MTLTexture> loaded = [self loadTextureForMesh:mesh];
     _texture = loaded ?: [self whiteTexture];
     
-    self.textureDebugInfo = [NSString stringWithFormat:@"@%lu: %d v, %d f (%@)",
-                             (unsigned long)mesh.offset, mesh.vertexCount, mesh.faceCount,
-                             loaded ? mesh.textureName : @"no texture"];
+    if (loaded) {
+        self.textureDebugInfo = [NSString stringWithFormat:@"Texture OK: %@", mesh.textureName];
+    } else {
+        self.textureDebugInfo = [NSString stringWithFormat:@"Texture FAILED: %@", mesh.textureName ?: @"(nil)"];
+    }
 }
 
 - (id<MTLTexture>)loadTextureForMesh:(MeshData *)mesh {
