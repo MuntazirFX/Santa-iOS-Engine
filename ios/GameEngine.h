@@ -22,10 +22,7 @@
 + (MeshData *)extractMeshFromAsset:(NSString *)assetName;
 + (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath;
 + (NSString *)listLevelFiles;
-+ (NSString *)listTextureFiles;
-
-// Decodes a DDS texture from the XPK archive (by its XPK-internal path,
-// e.g. "maps\\nicolaus.dds") into tightly-packed RGBA8 pixels.
++ (NSString *)listTextureFiles;  // ✅ Yeh wapas add kiya
 + (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath
                              width:(int *)outWidth
                             height:(int *)outHeight;
