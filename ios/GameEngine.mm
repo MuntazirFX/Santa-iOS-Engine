@@ -121,7 +121,7 @@ struct SkinWeightsData {
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
-    // PASS 1: Frame hierarchy
+    // PASS 1: Frame hierarchy (not used if skinning skipped, but kept for later)
     std::unordered_map<std::string, Mat4> boneWorldTransforms;
     {
         std::vector<Mat4> worldStack;
@@ -177,300 +177,126 @@ struct SkinWeightsData {
     
     NSLog(@"[Santa] Bones (from Frames): %lu", (unsigned long)boneWorldTransforms.size());
     
-    // ============================================================
-    // PASS 2: Extract Mesh + SkinWeights
-    // ============================================================
+    // PASS 2: Extract Mesh (skinning skipped)
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
     std::vector<uint32_t> allIdx;
     
-    struct RawMesh {
-        const std::vector<float>* verts;
-        const std::vector<int>* faces;
-        const std::vector<float>* uvs;
-        std::vector<SkinWeightsData> skins;
-        std::string textureFileName;
-    };
-    
-    std::vector<RawMesh> rawMeshes;
-    RawMesh currentMesh;
-    bool inMesh = false;
-    int meshDepth = 0;
-    
     int meshCount = 0;
-    int totalSkinBlocks = 0;
-    int missingBoneCount = 0;
     int uvFoundCount = 0;
     int uvMissingCount = 0;
+    int totalSkinBlocks = 0;
     std::string firstTextureFileName;
-    
-    // ✅ Helper: Parse SkinWeights (common code for inside/outside mesh)
-    auto parseSkinWeights = [&](size_t& i, SkinWeightsData& sw) {
-        std::vector<float> rawWeights;
-        std::vector<float> matrixFloats;   // ✅ NAYA: individual FLOATs for matrix
-        int d2 = 0; bool e2 = false;
-        int state = 0;
-        
-        for (size_t k = i + 1; k < tokens.size(); k++) {
-            const auto& tt = tokens[k];
-            if (tt.type == 10) { d2++; e2 = true; continue; }
-            if (tt.type == 11) {
-                d2--;
-                if (e2 && d2 == 0) { i = k; break; }
-                continue;
-            }
-            
-            if (state == 0) {
-                // Bone name: STRING (2) or NAME (1)
-                if (tt.type == 2 || tt.type == 1) {
-                    sw.boneName = tt.name;
-                    state = 1;
-                }
-            } else if (state == 1) {
-                // Vertex indices: ILIST (6)
-                if (tt.type == 6) {
-                    for (int v : tt.intList) sw.vertexIndices.push_back(v);
-                    state = 2;
-                } else if (tt.type == 41) {
-                    // nWeights DWORD — skip
-                    continue;
-                }
-            } else if (state == 2) {
-                // Weights: FLIST (7)
-                if (tt.type == 7) {
-                    rawWeights = tt.floatList;
-                    state = 3;
-                }
-            } else if (state == 3) {
-                // ✅ NAYA: Matrix4x4 — 16 individual FLOAT tokens (type 42)
-                if (tt.type == 42) {
-                    matrixFloats.push_back(tt.floatValue);
-                    if (matrixFloats.size() == 16) break;
-                } else if (tt.type == 7 && matrixFloats.empty()) {
-                    // Fallback: kuch writers matrix ko FLIST mein daalte hain
-                    for (float f : tt.floatList) matrixFloats.push_back(f);
-                    if (matrixFloats.size() >= 16) break;
-                }
-            }
-        }
-        
-        // Assign weights
-        sw.weights = rawWeights;
-        
-        // ✅ FIX: Matrix parsing
-        if (matrixFloats.size() >= 16) {
-            sw.offsetMatrix = Mat4::fromFloats16(
-                std::vector<float>(matrixFloats.begin(), matrixFloats.begin() + 16));
-        } else if (rawWeights.size() >= 16 && sw.vertexIndices.size() < rawWeights.size()) {
-            // Fallback: agar matrix alag nahi mili, FLIST ki last 16 values ko matrix maano
-            size_t weightsLen = rawWeights.size() - 16;
-            weightsLen = std::min(weightsLen, sw.vertexIndices.size());
-            sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
-            sw.offsetMatrix = Mat4::fromFloats16(
-                std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
-        } else {
-            sw.offsetMatrix = Mat4::identity();
-        }
-    };
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
+        if (tok.type != 1 || tok.name != "Mesh") continue;
         
-        // Mesh start
-        if (tok.type == 1 && tok.name == "Mesh") {
-            currentMesh = RawMesh();
-            currentMesh.verts = nullptr;
-            currentMesh.faces = nullptr;
-            currentMesh.uvs = nullptr;
-            inMesh = true;
-            meshDepth = 0;
-            continue;
-        }
+        int depth = 0;
+        bool entered = false;
+        int meshEndIdx = (int)tokens.size();
+        const std::vector<float>* meshVerts = nullptr;
+        const std::vector<int>* meshFaces = nullptr;
+        const std::vector<float>* meshUVs = nullptr;
+        std::string textureFileName;
         
-        if (inMesh) {
-            if (tok.type == 10) { meshDepth++; continue; }
-            if (tok.type == 11) {
-                meshDepth--;
-                if (meshDepth == 0) {
-                    inMesh = false;
-                    if (currentMesh.verts && currentMesh.verts->size() >= 3) {
-                        rawMeshes.push_back(currentMesh);
-                    }
-                    continue;
-                }
+        for (size_t j = i + 1; j < tokens.size(); j++) {
+            const auto& t = tokens[j];
+            if (t.type == 10) { depth++; entered = true; continue; }
+            if (t.type == 11) {
+                depth--;
+                if (entered && depth == 0) { meshEndIdx = (int)j; break; }
                 continue;
             }
             
-            if (tok.type == 7 && !currentMesh.verts) { currentMesh.verts = &tok.floatList; continue; }
-            if (tok.type == 6 && currentMesh.verts && !currentMesh.faces) { currentMesh.faces = &tok.intList; continue; }
+            if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
+            if (t.type == 6 && meshVerts && !meshFaces) { meshFaces = &t.intList; continue; }
             
-            if (tok.type == 1 && tok.name == "TextureFilename" && currentMesh.textureFileName.empty()) {
-                for (size_t k = i + 1; k < tokens.size() && k < i + 5; k++) {
+            if (t.type == 1 && t.name == "TextureFilename" && textureFileName.empty()) {
+                for (size_t k = j + 1; k < tokens.size() && k < j + 5; k++) {
                     if (tokens[k].type == 2 || tokens[k].type == 1 || tokens[k].type == 50) {
-                        currentMesh.textureFileName = tokens[k].name;
+                        textureFileName = tokens[k].name;
                         break;
                     }
                 }
                 continue;
             }
             
-            if (tok.type == 1 && tok.name == "MeshTextureCoords") {
+            if (t.type == 1 && t.name == "MeshTextureCoords") {
                 int d2 = 0; bool e2 = false;
-                for (size_t k = i + 1; k < tokens.size(); k++) {
+                for (size_t k = j + 1; k < tokens.size(); k++) {
                     if (tokens[k].type == 10) { d2++; e2 = true; continue; }
                     if (tokens[k].type == 11) {
                         d2--;
-                        if (e2 && d2 == 0) { i = k; break; }
+                        if (e2 && d2 == 0) { j = k; break; }
                         continue;
                     }
-                    if (tokens[k].type == 7) { currentMesh.uvs = &tokens[k].floatList; i = k; break; }
+                    if (tokens[k].type == 7) { meshUVs = &tokens[k].floatList; j = k; break; }
                 }
                 continue;
             }
             
-            if (tok.type == 1 && tok.name == "SkinWeights") {
-                SkinWeightsData sw;
-                parseSkinWeights(i, sw);
-                if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
-                    currentMesh.skins.push_back(sw);
-                    totalSkinBlocks++;
-                }
+            if (t.type == 1 && t.name == "SkinWeights") {
+                totalSkinBlocks++;
                 continue;
             }
         }
         
-        // SkinWeights outside Mesh
-        if (tok.type == 1 && tok.name == "SkinWeights" && !inMesh) {
-            SkinWeightsData sw;
-            parseSkinWeights(i, sw);
-            if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
-                if (!rawMeshes.empty()) {
-                    rawMeshes.back().skins.push_back(sw);
-                    totalSkinBlocks++;
-                }
+        if (meshVerts && meshVerts->size() >= 3) {
+            int vc = (int)(meshVerts->size() / 3);
+            int baseVertex = (int)(allVerts.size() / 3);
+            
+            // ✅ SKINNING SKIPPED: Vertices as-is (T-pose)
+            for (int v = 0; v < vc; v++) {
+                allVerts.push_back((*meshVerts)[v*3]);
+                allVerts.push_back((*meshVerts)[v*3+1]);
+                allVerts.push_back((*meshVerts)[v*3+2]);
+                allColors.push_back(1.0f);
+                allColors.push_back(1.0f);
+                allColors.push_back(1.0f);
             }
-            continue;
-        }
-    }
-    
-    NSLog(@"[Santa] Raw meshes: %lu | SkinBlocks: %d",
-          (unsigned long)rawMeshes.size(), totalSkinBlocks);
-    
-    // ============================================================
-    // PASS 3: Build final mesh with skinning
-    // ============================================================
-    for (size_t m = 0; m < rawMeshes.size(); m++) {
-        const auto& rm = rawMeshes[m];
-        if (!rm.verts || rm.verts->size() < 3) continue;
-        
-        int vc = (int)(rm.verts->size() / 3);
-        int baseVertex = (int)(allVerts.size() / 3);
-        
-        std::vector<Vec3> localVerts(vc);
-        for (int v = 0; v < vc; v++) {
-            localVerts[v] = { (*rm.verts)[v*3], (*rm.verts)[v*3+1], (*rm.verts)[v*3+2] };
-        }
-        
-        std::vector<Vec3> skinned(vc, {0,0,0});
-        std::vector<float> weightSum(vc, 0.0f);
-        bool anySkin = false;
-        
-        for (const auto& skin : rm.skins) {
-            auto it = boneWorldTransforms.find(skin.boneName);
-            if (it == boneWorldTransforms.end()) {
-                missingBoneCount++;
-                continue;
-            }
-            // ✅ SAHI ORDER: offsetMatrix × boneWorld
-            Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
-            for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
-                int vi = skin.vertexIndices[k];
-                float w = skin.weights[k];
-                if (vi < 0 || vi >= vc) continue;
-                Vec3 t = transformPoint(localVerts[vi], boneMatrix);
-                skinned[vi].x += w * t.x;
-                skinned[vi].y += w * t.y;
-                skinned[vi].z += w * t.z;
-                weightSum[vi] += w;
-                anySkin = true;
-            }
-        }
-        
-        for (int v = 0; v < vc; v++) {
-            if (weightSum[v] < 1e-6f) {
-                skinned[v] = localVerts[v];
-            } else if (std::fabs(weightSum[v] - 1.0f) > 1e-3f) {
-                float inv = 1.0f / weightSum[v];
-                skinned[v].x *= inv;
-                skinned[v].y *= inv;
-                skinned[v].z *= inv;
-            }
-        }
-        
-        for (int v = 0; v < vc; v++) {
-            allVerts.push_back(skinned[v].x);
-            allVerts.push_back(skinned[v].y);
-            allVerts.push_back(skinned[v].z);
-            if (anySkin) {
-                allColors.push_back(1.0f); allColors.push_back(1.0f); allColors.push_back(1.0f);
-            } else {
-                allColors.push_back(0.6f); allColors.push_back(0.6f); allColors.push_back(0.6f);
-            }
-        }
-        
-        if (rm.faces) {
-            const auto& raw = *rm.faces;
-            size_t p = 0;
-            if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
-                while (p < raw.size()) {
-                    uint32_t cnt = raw[p++];
-                    if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
-                    for (uint32_t k = 1; k + 1 < cnt; k++) {
-                        allIdx.push_back((uint32_t)raw[p] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[p + k] + baseVertex);
-                        allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
+            
+            if (meshFaces) {
+                const auto& raw = *meshFaces;
+                size_t p = 0;
+                if (!raw.empty() && (raw[0] == 3 || raw[0] == 4)) {
+                    while (p < raw.size()) {
+                        uint32_t cnt = raw[p++];
+                        if (cnt < 3 || cnt > 16 || p + cnt > raw.size()) break;
+                        for (uint32_t k = 1; k + 1 < cnt; k++) {
+                            allIdx.push_back((uint32_t)raw[p] + baseVertex);
+                            allIdx.push_back((uint32_t)raw[p + k] + baseVertex);
+                            allIdx.push_back((uint32_t)raw[p + k + 1] + baseVertex);
+                        }
+                        p += cnt;
                     }
-                    p += cnt;
-                }
-            } else {
-                for (size_t k = 0; k + 2 < raw.size(); k += 3) {
-                    allIdx.push_back((uint32_t)raw[k] + baseVertex);
-                    allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
-                    allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
-                }
-            }
-        }
-        
-        if (rm.uvs && rm.uvs->size() >= (size_t)vc * 2) {
-            allUVs.insert(allUVs.end(), rm.uvs->begin(), rm.uvs->begin() + vc * 2);
-            uvFoundCount++;
-        } else {
-            uvMissingCount++;
-            for (int u = 0; u < vc; u++) {
-                allUVs.push_back(0.5f);
-                allUVs.push_back(0.5f);
-            }
-        }
-        
-        if (firstTextureFileName.empty() && !rm.textureFileName.empty()) {
-            firstTextureFileName = rm.textureFileName;
-        }
-        meshCount++;
-    }
-    
-    if (firstTextureFileName.empty()) {
-        for (size_t i = 0; i < tokens.size(); i++) {
-            if (tokens[i].type == 1 && tokens[i].name == "TextureFilename") {
-                for (size_t j = i + 1; j < tokens.size() && j < i + 5; j++) {
-                    if (tokens[j].type == 2 || tokens[j].type == 1 || tokens[j].type == 50) {
-                        firstTextureFileName = tokens[j].name;
-                        break;
+                } else {
+                    for (size_t k = 0; k + 2 < raw.size(); k += 3) {
+                        allIdx.push_back((uint32_t)raw[k] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+1] + baseVertex);
+                        allIdx.push_back((uint32_t)raw[k+2] + baseVertex);
                     }
                 }
-                if (!firstTextureFileName.empty()) break;
             }
+            
+            if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
+                allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
+                uvFoundCount++;
+            } else {
+                uvMissingCount++;
+                for (int u = 0; u < vc; u++) {
+                    allUVs.push_back(0.5f);
+                    allUVs.push_back(0.5f);
+                }
+            }
+            
+            if (firstTextureFileName.empty() && !textureFileName.empty()) {
+                firstTextureFileName = textureFileName;
+            }
+            meshCount++;
         }
+        i = meshEndIdx;
     }
     
     if (firstTextureFileName.empty() && [assetName containsString:@"weihnachtsman"]) {
@@ -497,8 +323,8 @@ struct SkinWeightsData {
     
     NSString *uvStatus = [NSString stringWithFormat:@"UVs: %d OK, %d MISS", uvFoundCount, uvMissingCount];
     mesh.debugInfo = [NSString stringWithFormat:
-                      @"%@\n%dM %dSK %dMiss\n%d v, %d f\n%@\ntex: %@",
-                      assetName, meshCount, totalSkinBlocks, missingBoneCount,
+                      @"%@\n%dM %dSK(skip) %dMiss\n%d v, %d f\n%@\ntex: %@",
+                      assetName, meshCount, totalSkinBlocks, 0,
                       mesh.vertexCount, mesh.faceCount, uvStatus, textureInfo];
     return mesh;
 }
