@@ -1,6 +1,7 @@
 #import "GameEngine.h"
 #include "AssetManager.h"
 #include "XFileParser.h"
+#include "TextureLoader.h"
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -197,6 +198,7 @@ struct SkinWeightsData {
     int totalSkinBlocks = 0;
     int missingBoneCount = 0;
     int totalVertices = 0;
+    std::string firstTextureFileName; // texture path of the first mesh that has one
     
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
@@ -210,6 +212,7 @@ struct SkinWeightsData {
         const std::vector<int>* meshFaces = nullptr;
         const std::vector<float>* meshUVs = nullptr;
         std::vector<SkinWeightsData> skins;
+        std::string textureFileName; // raw path from the .x file's TextureFilename, e.g. "D:\...\Nicolaus.bmp"
         
         for (size_t j = i + 1; j < tokens.size(); j++) {
             const auto& t = tokens[j];
@@ -223,6 +226,16 @@ struct SkinWeightsData {
             
             if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
             if (t.type == 6 && meshVerts && !meshFaces) { meshFaces = &t.intList; continue; }
+            
+            if (t.type == 1 && t.name == "TextureFilename" && textureFileName.empty()) {
+                // Layout: NAME "TextureFilename" { STRING "..." } — peek ahead
+                // for the STRING without disturbing the outer loop's depth
+                // tracking (the { and } either side are still processed normally).
+                for (size_t k = j + 1; k < tokens.size() && k < j + 5; k++) {
+                    if (tokens[k].type == 2) { textureFileName = tokens[k].name; break; }
+                }
+                continue;
+            }
             
             if (t.type == 1 && t.name == "MeshTextureCoords") {
                 int d2 = 0; bool e2 = false;
@@ -418,6 +431,10 @@ struct SkinWeightsData {
                 }
             }
             
+            if (firstTextureFileName.empty() && !textureFileName.empty()) {
+                firstTextureFileName = textureFileName;
+            }
+            
             meshCount++;
         }
         
@@ -437,12 +454,36 @@ struct SkinWeightsData {
     mesh.uvs = [NSMutableData dataWithBytes:allUVs.data() length:allUVs.size() * 4];
     mesh.colors = [NSMutableData dataWithBytes:allColors.data() length:allColors.size() * 4];
     mesh.offset = 0;
+    
+    NSString *textureInfo = @"no texture";
+    if (!firstTextureFileName.empty()) {
+        std::string xpkPath = TextureLoader::resolveTextureXPKPath(firstTextureFileName);
+        mesh.textureName = [NSString stringWithUTF8String:xpkPath.c_str()];
+        textureInfo = mesh.textureName;
+    }
+    
     mesh.debugInfo = [NSString stringWithFormat:
-                      @"%@\n%dM %dSK %dMiss\n%d v, %d f",
+                      @"%@\n%dM %dSK %dMiss\n%d v, %d f\ntex: %@",
                       assetName, meshCount, totalSkinBlocks, missingBoneCount,
-                      mesh.vertexCount, mesh.faceCount];
+                      mesh.vertexCount, mesh.faceCount, textureInfo];
     
     return mesh;
+}
+
++ (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath width:(int *)outWidth height:(int *)outHeight {
+    if (!xpkPath) return nil;
+    
+    NSData *fileData = [self loadAssetNamed:xpkPath];
+    if (!fileData || fileData.length == 0) return nil;
+    
+    std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
+    std::vector<uint8_t> rgba;
+    int w = 0, h = 0;
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
+    
+    if (outWidth) *outWidth = w;
+    if (outHeight) *outHeight = h;
+    return [NSData dataWithBytes:rgba.data() length:rgba.size()];
 }
 
 // ============ LEVEL DATA PARSER (Skeleton) ============

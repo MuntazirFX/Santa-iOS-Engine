@@ -79,6 +79,7 @@
     
     const float *verts = (const float *)mesh.vertices.bytes;
     const float *colors = mesh.colors ? (const float *)mesh.colors.bytes : NULL;
+    const float *uvs = mesh.uvs ? (const float *)mesh.uvs.bytes : NULL;
     const uint32_t *faces = (const uint32_t *)mesh.indices.bytes;
     
     float minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
@@ -93,33 +94,61 @@
     if (maxDim < 0.001f) return;
     float s = 1.4f / maxDim;
     
-    // Vertex layout: 3 pos + 3 color = 6 floats
-    float *vb = new float[mesh.vertexCount * 6];
+    // Vertex layout: 3 pos + 2 uv + 3 color = 8 floats
+    float *vb = new float[mesh.vertexCount * 8];
     for (int i = 0; i < mesh.vertexCount; i++) {
-        vb[i*6+0] = (verts[i*3+0]-cx)*s;
-        vb[i*6+1] = (verts[i*3+1]-cy)*s;
-        vb[i*6+2] = (verts[i*3+2]-cz)*s;
-        if (colors) {
-            vb[i*6+3] = colors[i*3+0];
-            vb[i*6+4] = colors[i*3+1];
-            vb[i*6+5] = colors[i*3+2];
+        vb[i*8+0] = (verts[i*3+0]-cx)*s;
+        vb[i*8+1] = (verts[i*3+1]-cy)*s;
+        vb[i*8+2] = (verts[i*3+2]-cz)*s;
+        if (uvs) {
+            vb[i*8+3] = uvs[i*2+0];
+            vb[i*8+4] = uvs[i*2+1];
         } else {
-            vb[i*6+3] = 0.8f;
-            vb[i*6+4] = 0.8f;
-            vb[i*6+5] = 0.8f;
+            vb[i*8+3] = 0.5f;
+            vb[i*8+4] = 0.5f;
+        }
+        if (colors) {
+            vb[i*8+5] = colors[i*3+0];
+            vb[i*8+6] = colors[i*3+1];
+            vb[i*8+7] = colors[i*3+2];
+        } else {
+            vb[i*8+5] = 1.0f;
+            vb[i*8+6] = 1.0f;
+            vb[i*8+7] = 1.0f;
         }
     }
-    _vertexBuffer = [_device newBufferWithBytes:vb length:mesh.vertexCount*6*sizeof(float) options:MTLResourceStorageModeShared];
+    _vertexBuffer = [_device newBufferWithBytes:vb length:mesh.vertexCount*8*sizeof(float) options:MTLResourceStorageModeShared];
     delete[] vb;
     
     _indexBuffer = [_device newBufferWithBytes:faces length:mesh.faceCount*3*sizeof(uint32_t) options:MTLResourceStorageModeShared];
     _indexCount = mesh.faceCount * 3;
     
-    // Solid color shader — no texture needed
-    _texture = [self whiteTexture];
+    // Load the mesh's real texture (if it has one); fall back to a flat
+    // white texture (which just shows the vertex color, currently white)
+    // when there's no texture or decoding fails.
+    id<MTLTexture> loaded = [self loadTextureForMesh:mesh];
+    _texture = loaded ?: [self whiteTexture];
     
-    self.textureDebugInfo = [NSString stringWithFormat:@"@%lu: %d v, %d f (colored)",
-                             (unsigned long)mesh.offset, mesh.vertexCount, mesh.faceCount];
+    self.textureDebugInfo = [NSString stringWithFormat:@"@%lu: %d v, %d f (%@)",
+                             (unsigned long)mesh.offset, mesh.vertexCount, mesh.faceCount,
+                             loaded ? mesh.textureName : @"no texture"];
+}
+
+- (id<MTLTexture>)loadTextureForMesh:(MeshData *)mesh {
+    if (!mesh.textureName) return nil;
+    
+    int w = 0, h = 0;
+    NSData *rgba = [GameEngine loadTextureRGBA8Named:mesh.textureName width:&w height:&h];
+    if (!rgba || w <= 0 || h <= 0) return nil;
+    
+    MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                   width:w
+                                                                                  height:h
+                                                                               mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> t = [_device newTextureWithDescriptor:d];
+    [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:rgba.bytes bytesPerRow:(NSUInteger)(w * 4)];
+    return t;
 }
 
 - (void)mtkView:(MTKView *)v drawableSizeWillChange:(CGSize)s {}
