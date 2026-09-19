@@ -1,7 +1,6 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// ============ Textured mesh pipeline ============
 struct VertexOut {
     float4 position [[position]];
     float2 uv;
@@ -12,10 +11,9 @@ vertex VertexOut mesh_vertex(const device float *data [[buffer(0)]],
                               constant float &angle [[buffer(1)]],
                               uint vid [[vertex_id]]) {
     VertexOut out;
-    uint base = vid * 8;  // 3 pos + 2 uv + 3 color
+    uint base = vid * 8;
     float3 pos = float3(data[base], data[base+1], data[base+2]);
     
-    // Rotate around Y axis
     float c = cos(angle);
     float s = sin(angle);
     float3 r;
@@ -33,6 +31,6 @@ fragment float4 mesh_fragment(VertexOut in [[stage_in]],
                                texture2d<float> tex [[texture(0)]],
                                sampler samp [[sampler(0)]]) {
     float4 texColor = tex.sample(samp, in.uv);
-    // ✅ FIX 2: Sirf texture ka color return karo, vertex color se multiply mat karo
+    // ✅ SAHI: Sirf texture ka color return karo
     return float4(texColor.rgb, texColor.a);
 }
