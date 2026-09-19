@@ -121,61 +121,8 @@ struct SkinWeightsData {
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
-    // PASS 1: Frame hierarchy (not used if skinning skipped, but kept for later)
+    // PASS 1: Frame hierarchy (skipping for now)
     std::unordered_map<std::string, Mat4> boneWorldTransforms;
-    {
-        std::vector<Mat4> worldStack;
-        worldStack.push_back(Mat4::identity());
-        std::vector<char> braceKind;
-        std::vector<std::string> frameNameStack;
-        std::string pendingFrameName = "";
-        bool pendingFrame = false;
-        
-        for (size_t i = 0; i < tokens.size(); i++) {
-            const auto& tok = tokens[i];
-            if (tok.type == 1 && tok.name == "Frame") { pendingFrame = true; continue; }
-            if (pendingFrame && tok.type == 1) { pendingFrameName = tok.name; pendingFrame = false; continue; }
-            if (tok.type == 10) {
-                if (!pendingFrameName.empty()) {
-                    worldStack.push_back(worldStack.back());
-                    braceKind.push_back('F');
-                    frameNameStack.push_back(pendingFrameName);
-                    pendingFrameName = "";
-                } else {
-                    braceKind.push_back('O');
-                    frameNameStack.push_back("");
-                }
-                continue;
-            }
-            if (tok.type == 11) {
-                if (!braceKind.empty()) {
-                    char kind = braceKind.back();
-                    braceKind.pop_back();
-                    if (kind == 'F') {
-                        if (!frameNameStack.empty() && !frameNameStack.back().empty()) {
-                            boneWorldTransforms[frameNameStack.back()] = worldStack.back();
-                        }
-                        worldStack.pop_back();
-                    }
-                    if (!frameNameStack.empty()) frameNameStack.pop_back();
-                }
-                continue;
-            }
-            if (tok.type == 1 && tok.name == "FrameTransformMatrix") {
-                for (size_t j = i + 1; j < std::min(tokens.size(), i + 6); j++) {
-                    if (tokens[j].type == 7 && tokens[j].floatList.size() >= 16) {
-                        Mat4 local = Mat4::fromFloats16(tokens[j].floatList);
-                        Mat4 parentWorld = worldStack.back();
-                        worldStack.back() = mulMat(local, parentWorld);
-                        break;
-                    }
-                }
-                continue;
-            }
-        }
-    }
-    
-    NSLog(@"[Santa] Bones (from Frames): %lu", (unsigned long)boneWorldTransforms.size());
     
     // PASS 2: Extract Mesh (skinning skipped)
     std::vector<float> allVerts;
@@ -192,6 +139,16 @@ struct SkinWeightsData {
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         if (tok.type != 1 || tok.name != "Mesh") continue;
+        
+        // ✅ DIAGNOSTIC 1: Mesh ke andar pehle 20 tokens print karo
+        NSLog(@"[Mesh] === MESH FOUND at token %zu ===", i);
+        for (size_t dbg = i + 1; dbg < tokens.size() && dbg < i + 20; dbg++) {
+            NSLog(@"[Mesh]   [%zu] type=%d name='%s' ints=%lu floats=%lu intVal=%d",
+                  dbg, tokens[dbg].type, tokens[dbg].name.c_str(),
+                  (unsigned long)tokens[dbg].intList.size(),
+                  (unsigned long)tokens[dbg].floatList.size(),
+                  tokens[dbg].intValue);
+        }
         
         int depth = 0;
         bool entered = false;
@@ -247,7 +204,23 @@ struct SkinWeightsData {
             int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
             
-            // ✅ SKINNING SKIPPED: Vertices as-is (T-pose)
+            // ✅ DIAGNOSTIC 2: Vertices aur Faces ke values print karo
+            NSLog(@"[Mesh] Vertices: %d (FLIST size=%lu)", vc, (unsigned long)meshVerts->size());
+            NSLog(@"[Mesh] First 3 vertices: (%.3f,%.3f,%.3f), (%.3f,%.3f,%.3f), (%.3f,%.3f,%.3f)",
+                  (*meshVerts)[0], (*meshVerts)[1], (*meshVerts)[2],
+                  (*meshVerts)[3], (*meshVerts)[4], (*meshVerts)[5],
+                  (*meshVerts)[6], (*meshVerts)[7], (*meshVerts)[8]);
+            
+            if (meshFaces) {
+                NSLog(@"[Mesh] Faces ILIST size=%lu, first 12 values: %d %d %d %d %d %d %d %d %d %d %d %d",
+                      (unsigned long)meshFaces->size(),
+                      (*meshFaces)[0], (*meshFaces)[1], (*meshFaces)[2],
+                      (*meshFaces)[3], (*meshFaces)[4], (*meshFaces)[5],
+                      (*meshFaces)[6], (*meshFaces)[7], (*meshFaces)[8],
+                      (*meshFaces)[9], (*meshFaces)[10], (*meshFaces)[11]);
+            }
+            
+            // Vertices as-is (T-pose)
             for (int v = 0; v < vc; v++) {
                 allVerts.push_back((*meshVerts)[v*3]);
                 allVerts.push_back((*meshVerts)[v*3+1]);
