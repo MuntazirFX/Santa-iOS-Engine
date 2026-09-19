@@ -119,6 +119,21 @@ std::string resolveTextureXPKPath(const std::string& rawPath) {
     std::transform(base.begin(), base.end(), base.begin(),
                     [](unsigned char c) { return (char)std::tolower(c); });
 
+    // ✅ FIX 1: Texture Mapping Table — Convert .x internal names to actual .dds filenames
+    if (base == "nicolaus" || base == "weihnachtsmann" || base == "santa")
+        return "maps\\weihnachtsman.dds";
+    if (base == "troll" || base == "wintertroll" || base == "winter_troll")
+        return "maps\\winter_troll.dds";
+    if (base == "rabe" || base == "crow")
+        return "maps\\rabe.dds";
+    if (base == "schneemann" || base == "snowman")
+        return "maps\\schneemann.dds";
+    if (base == "objects" || base == "extralive")
+        return "maps\\objects.dds";
+    if (base == "snow" || base == "plattform")
+        return "maps\\snow.dds";
+
+    // Default fallback
     return "maps\\" + base + ".dds";
 }
 
