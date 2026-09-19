@@ -75,7 +75,6 @@ struct SkinWeightsData {
     return [NSData dataWithBytes:d.data() length:d.size()];
 }
 
-// ============ List all levels/*.dat files ============
 + (NSString *)listLevelFiles {
     NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!p) return @"No XPK";
@@ -91,7 +90,6 @@ struct SkinWeightsData {
     return out;
 }
 
-// ============ List all maps/*.dds texture files ============
 + (NSString *)listTextureFiles {
     NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!p) return @"No XPK";
@@ -128,11 +126,8 @@ struct SkinWeightsData {
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
     
-    // ============================================================
-    // PASS 1: Frame hierarchy → boneWorldTransforms map
-    // ============================================================
+    // PASS 1: Frame hierarchy
     std::unordered_map<std::string, Mat4> boneWorldTransforms;
-    
     {
         std::vector<Mat4> worldStack;
         worldStack.push_back(Mat4::identity());
@@ -143,16 +138,8 @@ struct SkinWeightsData {
         
         for (size_t i = 0; i < tokens.size(); i++) {
             const auto& tok = tokens[i];
-            
-            if (tok.type == 1 && tok.name == "Frame") {
-                pendingFrame = true;
-                continue;
-            }
-            if (pendingFrame && tok.type == 1) {
-                pendingFrameName = tok.name;
-                pendingFrame = false;
-                continue;
-            }
+            if (tok.type == 1 && tok.name == "Frame") { pendingFrame = true; continue; }
+            if (pendingFrame && tok.type == 1) { pendingFrameName = tok.name; pendingFrame = false; continue; }
             if (tok.type == 10) {
                 if (!pendingFrameName.empty()) {
                     worldStack.push_back(worldStack.back());
@@ -195,9 +182,7 @@ struct SkinWeightsData {
     
     NSLog(@"[Santa] Bones: %lu", (unsigned long)boneWorldTransforms.size());
     
-    // ============================================================
-    // PASS 2: Extract Mesh + apply skinning
-    // ============================================================
+    // PASS 2: Extract Mesh
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
@@ -206,7 +191,6 @@ struct SkinWeightsData {
     int meshCount = 0;
     int totalSkinBlocks = 0;
     int missingBoneCount = 0;
-    int totalVertices = 0;
     int uvFoundCount = 0;
     int uvMissingCount = 0;
     std::string firstTextureFileName;
@@ -226,7 +210,6 @@ struct SkinWeightsData {
         
         for (size_t j = i + 1; j < tokens.size(); j++) {
             const auto& t = tokens[j];
-            
             if (t.type == 10) { depth++; entered = true; continue; }
             if (t.type == 11) {
                 depth--;
@@ -269,14 +252,12 @@ struct SkinWeightsData {
                 
                 for (size_t k = j + 1; k < tokens.size(); k++) {
                     const auto& tt = tokens[k];
-                    
                     if (tt.type == 10) { d2++; e2 = true; continue; }
                     if (tt.type == 11) {
                         d2--;
                         if (e2 && d2 == 0) { j = k; break; }
                         continue;
                     }
-                    
                     if (state == 0) {
                         if (tt.type == 2 || tt.type == 1) { sw.boneName = tt.name; state = 1; }
                     } else if (state == 1) {
@@ -308,11 +289,9 @@ struct SkinWeightsData {
             }
         }
         
-        // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
             int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
-            totalVertices += vc;
             
             std::vector<Vec3> localVerts(vc);
             for (int v = 0; v < vc; v++) {
@@ -326,14 +305,11 @@ struct SkinWeightsData {
             for (const auto& skin : skins) {
                 auto it = boneWorldTransforms.find(skin.boneName);
                 if (it == boneWorldTransforms.end()) { missingBoneCount++; continue; }
-                
                 Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
-                
                 for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
                     int vi = skin.vertexIndices[k];
                     float w = skin.weights[k];
                     if (vi < 0 || vi >= vc) continue;
-                    
                     Vec3 t = transformPoint(localVerts[vi], boneMatrix);
                     skinned[vi].x += w * t.x;
                     skinned[vi].y += w * t.y;
@@ -358,15 +334,10 @@ struct SkinWeightsData {
                 allVerts.push_back(skinned[v].x);
                 allVerts.push_back(skinned[v].y);
                 allVerts.push_back(skinned[v].z);
-                
                 if (anySkin) {
-                    allColors.push_back(1.0f);
-                    allColors.push_back(1.0f);
-                    allColors.push_back(1.0f);
+                    allColors.push_back(1.0f); allColors.push_back(1.0f); allColors.push_back(1.0f);
                 } else {
-                    allColors.push_back(0.6f);
-                    allColors.push_back(0.6f);
-                    allColors.push_back(0.6f);
+                    allColors.push_back(0.6f); allColors.push_back(0.6f); allColors.push_back(0.6f);
                 }
             }
             
@@ -393,7 +364,7 @@ struct SkinWeightsData {
                 }
             }
             
-            // ===== UVs with diagnostic =====
+            // UVs
             if (meshUVs && meshUVs->size() >= (size_t)vc * 2) {
                 allUVs.insert(allUVs.end(), meshUVs->begin(), meshUVs->begin() + vc * 2);
                 uvFoundCount++;
@@ -408,13 +379,12 @@ struct SkinWeightsData {
             if (firstTextureFileName.empty() && !textureFileName.empty()) {
                 firstTextureFileName = textureFileName;
             }
-            
             meshCount++;
         }
-        
         i = meshEndIdx;
     }
     
+    // Fallback 1: poore tokens mein dhoondho
     if (firstTextureFileName.empty()) {
         for (size_t i = 0; i < tokens.size(); i++) {
             if (tokens[i].type == 1 && tokens[i].name == "TextureFilename") {
@@ -429,6 +399,7 @@ struct SkinWeightsData {
         }
     }
     
+    // Fallback 2: hardcoded
     if (firstTextureFileName.empty() && [assetName containsString:@"weihnachtsman"]) {
         firstTextureFileName = "Nicolaus.bmp";
     }
@@ -451,48 +422,43 @@ struct SkinWeightsData {
         textureInfo = mesh.textureName;
     }
     
-    // ✅ FIX: UV status ko debugInfo mein add karo
     NSString *uvStatus = [NSString stringWithFormat:@"UVs: %d OK, %d MISS", uvFoundCount, uvMissingCount];
     mesh.debugInfo = [NSString stringWithFormat:
                       @"%@\n%dM %dSK %dMiss\n%d v, %d f\n%@\ntex: %@",
                       assetName, meshCount, totalSkinBlocks, missingBoneCount,
                       mesh.vertexCount, mesh.faceCount, uvStatus, textureInfo];
-    
     return mesh;
 }
 
 + (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath width:(int *)outWidth height:(int *)outHeight {
     if (!xpkPath) return nil;
-    
     NSData *fileData = [self loadAssetNamed:xpkPath];
-    if (!fileData || fileData.length == 0) return nil;
-    
+    if (!fileData || fileData.length == 0) {
+        NSLog(@"[Texture] NOT FOUND in XPK: %@", xpkPath);
+        return nil;
+    }
     std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
-    
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) {
+        NSLog(@"[Texture] DDS decode FAILED: %@", xpkPath);
+        return nil;
+    }
+    NSLog(@"[Texture] Decoded OK: %@ (%dx%d)", xpkPath, w, h);
     if (outWidth) *outWidth = w;
     if (outHeight) *outHeight = h;
     return [NSData dataWithBytes:rgba.data() length:rgba.size()];
 }
 
-// ============ LEVEL DATA PARSER (Skeleton) ============
 + (NSArray<LevelObject *> *)parseLevelData:(NSString *)levelPath {
     NSData *data = [self loadAssetNamed:levelPath];
     if (!data) return @[];
-    
     const uint8_t *bytes = (const uint8_t *)data.bytes;
     NSUInteger totalSize = data.length;
-    
-    NSLog(@"[Level] %@: %lu bytes", levelPath, (unsigned long)totalSize);
-    
     NSArray *knownNames = @[@"EXTRA LIFE", @"JUMPER", @"PRESENT A",
                              @"EXIT", @"TROLL", @"HAUS", @"TREE",
                              @"KAMIN", @"PRESENT", @"TURM", @"HILL"];
-    
     NSMutableArray<LevelObject *> *objects = [NSMutableArray array];
-    
     for (NSUInteger i = 0; i + 8 < totalSize; i++) {
         for (NSString *name in knownNames) {
             NSData *nameData = [name dataUsingEncoding:NSASCIIStringEncoding];
@@ -507,8 +473,6 @@ struct SkinWeightsData {
             }
         }
     }
-    
-    NSLog(@"[Level] Total objects found: %lu", (unsigned long)objects.count);
     return objects;
 }
 
