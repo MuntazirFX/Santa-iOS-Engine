@@ -239,9 +239,13 @@ struct SkinWeightsData {
             if (t.type == 7 && !meshVerts) { meshVerts = &t.floatList; continue; }
             if (t.type == 6 && meshVerts && !meshFaces) { meshFaces = &t.intList; continue; }
             
+            // ✅ FIX: TextureFilename — type 2 (STRING), 1 (NAME), ya 50 (CSTRING) accept karo
             if (t.type == 1 && t.name == "TextureFilename" && textureFileName.empty()) {
                 for (size_t k = j + 1; k < tokens.size() && k < j + 5; k++) {
-                    if (tokens[k].type == 2) { textureFileName = tokens[k].name; break; }
+                    if (tokens[k].type == 2 || tokens[k].type == 1 || tokens[k].type == 50) {
+                        textureFileName = tokens[k].name;
+                        break;
+                    }
                 }
                 continue;
             }
@@ -277,7 +281,11 @@ struct SkinWeightsData {
                     }
                     
                     if (state == 0) {
-                        if (tt.type == 2) { sw.boneName = tt.name; state = 1; }
+                        // ✅ FIX: Bone name type 2 (STRING) ya type 1 (NAME) ho sakta hai
+                        if (tt.type == 2 || tt.type == 1) {
+                            sw.boneName = tt.name;
+                            state = 1;
+                        }
                     } else if (state == 1) {
                         if (tt.type == 6) {
                             for (int v : tt.intList) sw.vertexIndices.push_back(v);
@@ -310,6 +318,7 @@ struct SkinWeightsData {
             }
         }
         
+        // ===== Extract vertices + apply skinning =====
         if (meshVerts && meshVerts->size() >= 3) {
             int vc = (int)(meshVerts->size() / 3);
             int baseVertex = (int)(allVerts.size() / 3);
@@ -420,6 +429,33 @@ struct SkinWeightsData {
     
     NSLog(@"[Santa] Meshes: %d | SkinBlocks: %d | MissingBones: %d | Verts: %d",
           meshCount, totalSkinBlocks, missingBoneCount, totalVertices);
+    
+    // ============================================================
+    // ✅ FALLBACK 1: Agar mesh ke andar TextureFilename nahi mila,
+    // toh poore token list mein dhoondho.
+    // ============================================================
+    if (firstTextureFileName.empty()) {
+        for (size_t i = 0; i < tokens.size(); i++) {
+            if (tokens[i].type == 1 && tokens[i].name == "TextureFilename") {
+                for (size_t j = i + 1; j < tokens.size() && j < i + 5; j++) {
+                    if (tokens[j].type == 2 || tokens[j].type == 1 || tokens[j].type == 50) {
+                        firstTextureFileName = tokens[j].name;
+                        break;
+                    }
+                }
+                if (!firstTextureFileName.empty()) break;
+            }
+        }
+    }
+    
+    // ============================================================
+    // ✅ FALLBACK 2 (HARDCODED): Agar ab bhi kuch nahi mila, toh Santa ke liye
+    // "Nicolaus.bmp" use karo, jo TextureLoader mein
+    // "maps\weihnachtsman.dds" se map hota hai.
+    // ============================================================
+    if (firstTextureFileName.empty() && [assetName containsString:@"weihnachtsman"]) {
+        firstTextureFileName = "Nicolaus.bmp";
+    }
     
     if (allVerts.empty() || allIdx.empty()) return nil;
     
