@@ -61,6 +61,9 @@
         
         NSError *err = nil;
         _meshPipelineState = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+        if (!_meshPipelineState) {
+            NSLog(@"[MetalView] Pipeline creation failed: %@", err);
+        }
     }
     return self;
 }
@@ -82,6 +85,7 @@
     const float *uvs = mesh.uvs ? (const float *)mesh.uvs.bytes : NULL;
     const uint32_t *faces = (const uint32_t *)mesh.indices.bytes;
     
+    // Bounding box for auto-normalization to [-0.7, 0.7] range
     float minX = 1e9, maxX = -1e9, minY = 1e9, maxY = -1e9, minZ = 1e9, maxZ = -1e9;
     for (int i = 0; i < mesh.vertexCount; i++) {
         float x = verts[i*3], y = verts[i*3+1], z = verts[i*3+2];
@@ -102,7 +106,12 @@
         vb[i*8+2] = (verts[i*3+2]-cz)*s;
         if (uvs) {
             vb[i*8+3] = uvs[i*2+0];
-            vb[i*8+4] = uvs[i*2+1];
+            // ============================================================
+            // FIX: V-flip. X-File UVs are in DirectX convention
+            // (V=0 at bottom), but Metal samples textures with V=0 at
+            // the top. Without this flip, textures appear upside-down.
+            // ============================================================
+            vb[i*8+4] = 1.0f - uvs[i*2+1];
         } else {
             vb[i*8+3] = 0.5f;
             vb[i*8+4] = 0.5f;
@@ -124,22 +133,28 @@
     _indexCount = mesh.faceCount * 3;
     
     // Load the mesh's real texture (if it has one); fall back to a flat
-    // white texture (which just shows the vertex color, currently white)
-    // when there's no texture or decoding fails.
+    // white texture (which then shows vertex color via shader fallback)
     id<MTLTexture> loaded = [self loadTextureForMesh:mesh];
     _texture = loaded ?: [self whiteTexture];
     
     self.textureDebugInfo = [NSString stringWithFormat:@"@%lu: %d v, %d f (%@)",
                              (unsigned long)mesh.offset, mesh.vertexCount, mesh.faceCount,
                              loaded ? mesh.textureName : @"no texture"];
+    NSLog(@"[MetalView] Mesh set: %@", self.textureDebugInfo);
 }
 
 - (id<MTLTexture>)loadTextureForMesh:(MeshData *)mesh {
-    if (!mesh.textureName) return nil;
+    if (!mesh.textureName) {
+        NSLog(@"[MetalView] No texture name on mesh");
+        return nil;
+    }
     
     int w = 0, h = 0;
     NSData *rgba = [GameEngine loadTextureRGBA8Named:mesh.textureName width:&w height:&h];
-    if (!rgba || w <= 0 || h <= 0) return nil;
+    if (!rgba || w <= 0 || h <= 0) {
+        NSLog(@"[MetalView] Failed to decode: %@", mesh.textureName);
+        return nil;
+    }
     
     MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                    width:w
@@ -148,6 +163,7 @@
     d.usage = MTLTextureUsageShaderRead;
     id<MTLTexture> t = [_device newTextureWithDescriptor:d];
     [t replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:rgba.bytes bytesPerRow:(NSUInteger)(w * 4)];
+    NSLog(@"[MetalView] ✅ Texture loaded: %@ (%dx%d)", mesh.textureName, w, h);
     return t;
 }
 
