@@ -15,7 +15,7 @@
     mv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     [vc.view addSubview:mv];
     
-    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 200)];
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(0, 40, vc.view.bounds.size.width, 260)];
     tv.backgroundColor = [UIColor colorWithWhite:0.0 alpha:0.85];
     tv.textColor = [UIColor greenColor];
     tv.font = [UIFont fontWithName:@"Courier" size:9];
@@ -25,11 +25,10 @@
     
     NSMutableString *log = [NSMutableString string];
     
-    // ===== Build identity — so a screen recording always shows exactly
-    // which commit produced this binary, no guessing about stale builds =====
+    // ===== Build identity =====
     [log appendFormat:@"Build: %s @ %s\n\n", SANTA_BUILD_SHA, SANTA_BUILD_TIME];
     
-    // ===== Load SANTA (correct file) =====
+    // ===== Load SANTA =====
     [log appendString:@"Loading Santa...\n"];
     MeshData *mesh = [GameEngine extractMeshFromAsset:@"gfx\\weihnachtsman_000.x"];
     
@@ -43,6 +42,10 @@
     // ===== List levels =====
     [log appendString:@"\nLevels:\n"];
     [log appendString:[GameEngine listLevelFiles]];
+    
+    // ===== List textures (debug) =====
+    [log appendString:@"\nTextures:\n"];
+    [log appendString:[GameEngine listTextureFiles]];
     
     tv.text = log;
     
