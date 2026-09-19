@@ -91,6 +91,22 @@ struct SkinWeightsData {
     return out;
 }
 
+// ============ List all maps/*.dds texture files ============
++ (NSString *)listTextureFiles {
+    NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
+    if (!p) return @"No XPK";
+    AssetManager am;
+    if (!am.loadXPK([p UTF8String])) return @"XPK load failed";
+    std::vector<std::string> all = am.getAllFilenames();
+    NSMutableString *out = [NSMutableString string];
+    for (const auto& n : all) {
+        if (n.find("maps\\") != std::string::npos || n.find("maps/") != std::string::npos) {
+            [out appendFormat:@"%s\n", n.c_str()];
+        }
+    }
+    return out;
+}
+
 // ============ LOAD SANTA MESH (from named asset) ============
 + (MeshData *)extractMeshFromAsset:(NSString *)assetName {
     NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
@@ -348,7 +364,7 @@ struct SkinWeightsData {
                 allVerts.push_back(skinned[v].y);
                 allVerts.push_back(skinned[v].z);
                 
-                // ✅ FIX 3: Skinned vertices ko WHITE color do (pehle RED tha)
+                // ✅ FIX: Skinned vertices ko WHITE color do (pehle RED tha)
                 if (anySkin) {
                     allColors.push_back(1.0f);
                     allColors.push_back(1.0f);
