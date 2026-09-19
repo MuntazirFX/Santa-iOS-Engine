@@ -64,7 +64,6 @@ struct SkinWeightsData {
 
 @implementation GameEngine
 
-// ============ ASSET LOADING ============
 + (NSData *)loadAssetNamed:(NSString *)name {
     NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!p) return nil;
@@ -105,7 +104,6 @@ struct SkinWeightsData {
     return out;
 }
 
-// ============ LOAD SANTA MESH ============
 + (MeshData *)extractMeshFromAsset:(NSString *)assetName {
     NSString *p = [[NSBundle mainBundle] pathForResource:@"xmas" ofType:@"xpk"];
     if (!p) return nil;
@@ -115,44 +113,13 @@ struct SkinWeightsData {
     
     std::string name = [assetName UTF8String];
     std::vector<uint8_t> fileData = am.getAssetData(name);
-    if (fileData.empty()) {
-        NSLog(@"[Santa] Asset not found: %@", assetName);
-        return nil;
-    }
+    if (fileData.empty()) return nil;
     
     std::vector<uint8_t> decompressed = XFileParser::decompressMSZip(fileData.data(), fileData.size());
     if (decompressed.size() < 16) return nil;
     
     std::vector<XToken> tokens = XFileParser::parseTokens(decompressed.data(), decompressed.size(), 500000);
     NSLog(@"[Santa] Tokens: %lu", (unsigned long)tokens.size());
-    
-    // ============================================================
-    // ✅ DIAGNOSTIC: Poore file mein SkinWeights dhoondho
-    // ============================================================
-    int skinWeightsTokenCount = 0;
-    for (size_t di = 0; di < tokens.size(); di++) {
-        if (tokens[di].type == 1 && tokens[di].name == "SkinWeights") {
-            skinWeightsTokenCount++;
-            if (skinWeightsTokenCount <= 3) {
-                NSLog(@"[Diag] SkinWeights found at token index %zu", di);
-                for (size_t dbg = di; dbg < tokens.size() && dbg < di + 8; dbg++) {
-                    NSLog(@"[Diag]   [%zu] type=%d name='%s' ints=%lu floats=%lu",
-                          dbg, tokens[dbg].type, tokens[dbg].name.c_str(),
-                          (unsigned long)tokens[dbg].intList.size(),
-                          (unsigned long)tokens[dbg].floatList.size());
-                }
-            }
-        }
-        if (tokens[di].type == 1 && tokens[di].name == "XSkinMeshHeader") {
-            NSLog(@"[Diag] XSkinMeshHeader found at token index %zu", di);
-        }
-        if (tokens[di].type == 1 && tokens[di].name == "Frame") {
-            if (di + 1 < tokens.size() && tokens[di+1].type == 1) {
-                NSLog(@"[Diag] Frame name: '%s'", tokens[di+1].name.c_str());
-            }
-        }
-    }
-    NSLog(@"[Diag] TOTAL SkinWeights tokens in file: %d", skinWeightsTokenCount);
     
     // PASS 1: Frame hierarchy
     std::unordered_map<std::string, Mat4> boneWorldTransforms;
@@ -210,14 +177,14 @@ struct SkinWeightsData {
     
     NSLog(@"[Santa] Bones (from Frames): %lu", (unsigned long)boneWorldTransforms.size());
     
+    // ============================================================
     // PASS 2: Extract Mesh + SkinWeights
+    // ============================================================
     std::vector<float> allVerts;
     std::vector<float> allUVs;
     std::vector<float> allColors;
     std::vector<uint32_t> allIdx;
     
-    // ✅ FIX: Pehle saare Mesh + SkinWeights collect karo (X format mein
-    // SkinWeights alag template hai, Mesh ke bahar bhi ho sakta hai)
     struct RawMesh {
         const std::vector<float>* verts;
         const std::vector<int>* faces;
@@ -238,6 +205,75 @@ struct SkinWeightsData {
     int uvMissingCount = 0;
     std::string firstTextureFileName;
     
+    // ✅ Helper: Parse SkinWeights (common code for inside/outside mesh)
+    auto parseSkinWeights = [&](size_t& i, SkinWeightsData& sw) {
+        std::vector<float> rawWeights;
+        std::vector<float> matrixFloats;   // ✅ NAYA: individual FLOATs for matrix
+        int d2 = 0; bool e2 = false;
+        int state = 0;
+        
+        for (size_t k = i + 1; k < tokens.size(); k++) {
+            const auto& tt = tokens[k];
+            if (tt.type == 10) { d2++; e2 = true; continue; }
+            if (tt.type == 11) {
+                d2--;
+                if (e2 && d2 == 0) { i = k; break; }
+                continue;
+            }
+            
+            if (state == 0) {
+                // Bone name: STRING (2) or NAME (1)
+                if (tt.type == 2 || tt.type == 1) {
+                    sw.boneName = tt.name;
+                    state = 1;
+                }
+            } else if (state == 1) {
+                // Vertex indices: ILIST (6)
+                if (tt.type == 6) {
+                    for (int v : tt.intList) sw.vertexIndices.push_back(v);
+                    state = 2;
+                } else if (tt.type == 41) {
+                    // nWeights DWORD — skip
+                    continue;
+                }
+            } else if (state == 2) {
+                // Weights: FLIST (7)
+                if (tt.type == 7) {
+                    rawWeights = tt.floatList;
+                    state = 3;
+                }
+            } else if (state == 3) {
+                // ✅ NAYA: Matrix4x4 — 16 individual FLOAT tokens (type 42)
+                if (tt.type == 42) {
+                    matrixFloats.push_back(tt.floatValue);
+                    if (matrixFloats.size() == 16) break;
+                } else if (tt.type == 7 && matrixFloats.empty()) {
+                    // Fallback: kuch writers matrix ko FLIST mein daalte hain
+                    for (float f : tt.floatList) matrixFloats.push_back(f);
+                    if (matrixFloats.size() >= 16) break;
+                }
+            }
+        }
+        
+        // Assign weights
+        sw.weights = rawWeights;
+        
+        // ✅ FIX: Matrix parsing
+        if (matrixFloats.size() >= 16) {
+            sw.offsetMatrix = Mat4::fromFloats16(
+                std::vector<float>(matrixFloats.begin(), matrixFloats.begin() + 16));
+        } else if (rawWeights.size() >= 16 && sw.vertexIndices.size() < rawWeights.size()) {
+            // Fallback: agar matrix alag nahi mili, FLIST ki last 16 values ko matrix maano
+            size_t weightsLen = rawWeights.size() - 16;
+            weightsLen = std::min(weightsLen, sw.vertexIndices.size());
+            sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
+            sw.offsetMatrix = Mat4::fromFloats16(
+                std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
+        } else {
+            sw.offsetMatrix = Mat4::identity();
+        }
+    };
+    
     for (size_t i = 0; i < tokens.size(); i++) {
         const auto& tok = tokens[i];
         
@@ -253,10 +289,7 @@ struct SkinWeightsData {
         }
         
         if (inMesh) {
-            if (tok.type == 10) {
-                meshDepth++;
-                continue;
-            }
+            if (tok.type == 10) { meshDepth++; continue; }
             if (tok.type == 11) {
                 meshDepth--;
                 if (meshDepth == 0) {
@@ -297,49 +330,8 @@ struct SkinWeightsData {
             }
             
             if (tok.type == 1 && tok.name == "SkinWeights") {
-                NSLog(@"[SkinWeights] Found at token %zu (inside Mesh)", i);
                 SkinWeightsData sw;
-                std::vector<float> rawWeights;
-                int d2 = 0; bool e2 = false;
-                int state = 0;
-                
-                for (size_t k = i + 1; k < tokens.size(); k++) {
-                    const auto& tt = tokens[k];
-                    if (tt.type == 10) { d2++; e2 = true; continue; }
-                    if (tt.type == 11) {
-                        d2--;
-                        if (e2 && d2 == 0) { i = k; break; }
-                        continue;
-                    }
-                    
-                    if (state == 0) {
-                        if (tt.type == 2 || tt.type == 1) { sw.boneName = tt.name; state = 1; }
-                    } else if (state == 1) {
-                        if (tt.type == 6) {
-                            for (int v : tt.intList) sw.vertexIndices.push_back(v);
-                            state = 2;
-                        }
-                    } else if (state == 2) {
-                        if (tt.type == 7) { rawWeights = tt.floatList; state = 3; }
-                    }
-                }
-                
-                if (rawWeights.size() >= 16) {
-                    size_t weightsLen = rawWeights.size() - 16;
-                    weightsLen = std::min(weightsLen, sw.vertexIndices.size());
-                    sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
-                    sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
-                } else if (!rawWeights.empty()) {
-                    size_t nW = std::min(rawWeights.size(), sw.vertexIndices.size());
-                    sw.weights.assign(rawWeights.begin(), rawWeights.begin() + nW);
-                    sw.offsetMatrix = Mat4::identity();
-                }
-                
-                NSLog(@"[SkinWeights]   bone='%s' verts=%lu weights=%lu",
-                      sw.boneName.c_str(),
-                      (unsigned long)sw.vertexIndices.size(),
-                      (unsigned long)sw.weights.size());
-                
+                parseSkinWeights(i, sw);
                 if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
                     currentMesh.skins.push_back(sw);
                     totalSkinBlocks++;
@@ -348,53 +340,11 @@ struct SkinWeightsData {
             }
         }
         
-        // ✅ FIX: SkinWeights outside Mesh (standard .x format)
+        // SkinWeights outside Mesh
         if (tok.type == 1 && tok.name == "SkinWeights" && !inMesh) {
-            NSLog(@"[SkinWeights] Found at token %zu (OUTSIDE Mesh)", i);
             SkinWeightsData sw;
-            std::vector<float> rawWeights;
-            int d2 = 0; bool e2 = false;
-            int state = 0;
-            
-            for (size_t k = i + 1; k < tokens.size(); k++) {
-                const auto& tt = tokens[k];
-                if (tt.type == 10) { d2++; e2 = true; continue; }
-                if (tt.type == 11) {
-                    d2--;
-                    if (e2 && d2 == 0) { i = k; break; }
-                    continue;
-                }
-                
-                if (state == 0) {
-                    if (tt.type == 2 || tt.type == 1) { sw.boneName = tt.name; state = 1; }
-                } else if (state == 1) {
-                    if (tt.type == 6) {
-                        for (int v : tt.intList) sw.vertexIndices.push_back(v);
-                        state = 2;
-                    }
-                } else if (state == 2) {
-                    if (tt.type == 7) { rawWeights = tt.floatList; state = 3; }
-                }
-            }
-            
-            if (rawWeights.size() >= 16) {
-                size_t weightsLen = rawWeights.size() - 16;
-                weightsLen = std::min(weightsLen, sw.vertexIndices.size());
-                sw.weights.assign(rawWeights.begin(), rawWeights.begin() + weightsLen);
-                sw.offsetMatrix = Mat4::fromFloats16(std::vector<float>(rawWeights.end() - 16, rawWeights.end()));
-            } else if (!rawWeights.empty()) {
-                size_t nW = std::min(rawWeights.size(), sw.vertexIndices.size());
-                sw.weights.assign(rawWeights.begin(), rawWeights.begin() + nW);
-                sw.offsetMatrix = Mat4::identity();
-            }
-            
-            NSLog(@"[SkinWeights]   bone='%s' verts=%lu weights=%lu",
-                  sw.boneName.c_str(),
-                  (unsigned long)sw.vertexIndices.size(),
-                  (unsigned long)sw.weights.size());
-            
+            parseSkinWeights(i, sw);
             if (!sw.boneName.empty() && !sw.vertexIndices.empty() && !sw.weights.empty()) {
-                // Last mesh par apply karo
                 if (!rawMeshes.empty()) {
                     rawMeshes.back().skins.push_back(sw);
                     totalSkinBlocks++;
@@ -404,7 +354,7 @@ struct SkinWeightsData {
         }
     }
     
-    NSLog(@"[Santa] Raw meshes collected: %lu | SkinBlocks: %d",
+    NSLog(@"[Santa] Raw meshes: %lu | SkinBlocks: %d",
           (unsigned long)rawMeshes.size(), totalSkinBlocks);
     
     // ============================================================
@@ -430,10 +380,10 @@ struct SkinWeightsData {
             auto it = boneWorldTransforms.find(skin.boneName);
             if (it == boneWorldTransforms.end()) {
                 missingBoneCount++;
-                NSLog(@"[Santa] Missing bone: %s", skin.boneName.c_str());
                 continue;
             }
-            Mat4 boneMatrix = mulMat(it->second, skin.offsetMatrix);   // ✅ SAHI ORDER
+            // ✅ SAHI ORDER: offsetMatrix × boneWorld
+            Mat4 boneMatrix = mulMat(skin.offsetMatrix, it->second);
             for (size_t k = 0; k < skin.vertexIndices.size() && k < skin.weights.size(); k++) {
                 int vi = skin.vertexIndices[k];
                 float w = skin.weights[k];
@@ -509,7 +459,6 @@ struct SkinWeightsData {
         meshCount++;
     }
     
-    // Fallback texture
     if (firstTextureFileName.empty()) {
         for (size_t i = 0; i < tokens.size(); i++) {
             if (tokens[i].type == 1 && tokens[i].name == "TextureFilename") {
@@ -557,18 +506,11 @@ struct SkinWeightsData {
 + (NSData *)loadTextureRGBA8Named:(NSString *)xpkPath width:(int *)outWidth height:(int *)outHeight {
     if (!xpkPath) return nil;
     NSData *fileData = [self loadAssetNamed:xpkPath];
-    if (!fileData || fileData.length == 0) {
-        NSLog(@"[Texture] NOT FOUND in XPK: %@", xpkPath);
-        return nil;
-    }
+    if (!fileData || fileData.length == 0) return nil;
     std::vector<uint8_t> raw((const uint8_t *)fileData.bytes, (const uint8_t *)fileData.bytes + fileData.length);
     std::vector<uint8_t> rgba;
     int w = 0, h = 0;
-    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) {
-        NSLog(@"[Texture] DDS decode FAILED: %@", xpkPath);
-        return nil;
-    }
-    NSLog(@"[Texture] Decoded OK: %@ (%dx%d)", xpkPath, w, h);
+    if (!TextureLoader::decodeDDS(raw, rgba, w, h)) return nil;
     if (outWidth) *outWidth = w;
     if (outHeight) *outHeight = h;
     return [NSData dataWithBytes:rgba.data() length:rgba.size()];
