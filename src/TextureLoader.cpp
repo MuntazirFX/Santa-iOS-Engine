@@ -11,7 +11,6 @@ uint32_t readU32(const uint8_t* d) {
     return (uint32_t)d[0] | ((uint32_t)d[1] << 8) | ((uint32_t)d[2] << 16) | ((uint32_t)d[3] << 24);
 }
 
-// Counts trailing zero bits — used to find a mask's shift amount.
 int shiftForMask(uint32_t mask) {
     if (mask == 0) return 0;
     int shift = 0;
@@ -19,7 +18,6 @@ int shiftForMask(uint32_t mask) {
     return shift;
 }
 
-// Number of set bits in a mask — used to scale a channel up to 8 bits.
 int bitsInMask(uint32_t mask) {
     int bits = 0;
     while (mask) { bits += (mask & 1u); mask >>= 1; }
@@ -29,7 +27,6 @@ int bitsInMask(uint32_t mask) {
 uint8_t scaleToByte(uint32_t value, int bits) {
     if (bits <= 0) return 0;
     if (bits >= 8) return (uint8_t)(value >> (bits - 8));
-    // Replicate bits to fill 8 bits (e.g. 5-bit 0..31 -> 0..255).
     uint32_t maxVal = (1u << bits) - 1u;
     return (uint8_t)((value * 255u) / maxVal);
 }
@@ -63,7 +60,7 @@ bool decodeDDS(const std::vector<uint8_t>& fileData,
 
     if (pfFlags & DDPF_FOURCC) {
         (void)fourCC;
-        return false; // Compressed (DXT/BC) formats aren't needed for this archive's textures.
+        return false;
     }
     if (!(pfFlags & DDPF_RGB)) return false;
     if (rgbCount != 16 && rgbCount != 24 && rgbCount != 32) return false;
@@ -107,19 +104,16 @@ bool decodeDDS(const std::vector<uint8_t>& fileData,
 }
 
 std::string resolveTextureXPKPath(const std::string& rawPath) {
-    // Strip directory (handle both \ and / separators).
     size_t slash = rawPath.find_last_of("\\/");
     std::string base = (slash == std::string::npos) ? rawPath : rawPath.substr(slash + 1);
 
-    // Strip extension.
     size_t dot = base.find_last_of('.');
     if (dot != std::string::npos) base = base.substr(0, dot);
 
-    // Lowercase.
     std::transform(base.begin(), base.end(), base.begin(),
                     [](unsigned char c) { return (char)std::tolower(c); });
 
-    // ✅ FIX 1: Texture Mapping Table — Convert .x internal names to actual .dds filenames
+    // ✅ SAHI MAPPING TABLE
     if (base == "nicolaus" || base == "weihnachtsmann" || base == "santa")
         return "maps\\weihnachtsman.dds";
     if (base == "troll" || base == "wintertroll" || base == "winter_troll")
@@ -128,12 +122,13 @@ std::string resolveTextureXPKPath(const std::string& rawPath) {
         return "maps\\rabe.dds";
     if (base == "schneemann" || base == "snowman")
         return "maps\\schneemann.dds";
-    if (base == "objects" || base == "extralive")
+    if (base == "extralive")
+        return "maps\\extralive.dds"; // ✅ FIX: Extralive ka apna texture hai
+    if (base == "objects")
         return "maps\\objects.dds";
     if (base == "snow" || base == "plattform")
         return "maps\\snow.dds";
 
-    // Default fallback
     return "maps\\" + base + ".dds";
 }
 
